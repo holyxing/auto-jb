@@ -1,0 +1,36 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><title>Auto JB · 本地流程验证</title><style>
+*{box-sizing:border-box}body{margin:0;font:15px system-ui;background:#f1f4f6;color:#283744}header{padding:20px 32px;background:white;border-bottom:1px solid #d9dfe4;display:flex;justify-content:space-between}header strong{font-size:20px}nav{padding:16px 32px;background:#fff;display:flex;gap:20px}.notice{margin:0;padding:10px 32px;background:#f8f0df;color:#755723}.layout{display:grid;grid-template-columns:370px 1fr;gap:20px;margin:20px;height:70vh}#job-list{overflow-y:auto;border:1px solid #d9dfe4;background:#f4f6f8;padding:10px}.job-card{padding:20px;margin-bottom:12px;border:1px solid #d9dfe4;border-radius:6px;background:#fff;min-height:160px;cursor:pointer}.job-card.selected{border-color:#176b70}.title{font-weight:600;font-size:19px}.city,.company{margin-top:18px;color:#5b6a78}#detail{background:#fff;border:1px solid #d9dfe4;border-radius:6px;padding:28px;overflow:auto}.description{white-space:pre-line;line-height:2;margin-top:32px}button{padding:10px 20px;border:1px solid #176b70;border-radius:4px;background:#176b70;color:white;cursor:pointer}button:disabled{opacity:.5;cursor:default}#chat{position:fixed;right:30px;top:130px;width:430px;background:#fff;border:1px solid #8da0ad;border-radius:8px;padding:24px;box-shadow:0 4px 16px #0001}#chat p{background:#f3f6f7;padding:12px;line-height:1.8}select{padding:7px}.controls{display:flex;gap:12px;align-items:center;font-size:12px}a{color:#176b70}</style></head><body>
+<header><strong>岗位列表 · 本地验证样本</strong><span data-account="fixture-user">测试账号 · 不连接招聘平台</span></header>
+<p class="notice">这是独立的本地测试页面。所有开聊与简历发送只修改本页面，不联系任何招聘方。</p>
+<nav><b>AI 与产品相关岗位 · 北京</b><span>薪资不限</span><span>经验不限</span><span>职级不限</span><a href="/" target="_blank">打开工作台</a></nav>
+<div class="controls" style="padding:0 32px"><label>点击后行为 <select id="scenario"><option value="sent">自动发送原生招呼</option><option value="open">只打开聊天</option><option value="wait">简历等待对方同意</option><option value="mismatch">会话对象错误</option></select></label><label>详情延迟 <select id="delay"><option value="200">200ms</option><option value="2500">2500ms</option></select></label><button id="block" style="padding:4px 10px">模拟平台限制</button></div>
+<div class="layout"><section id="job-list"></section><section id="detail"></section></div>
+<script>
+const data=[
+ {key:'director',title:'AI产品总监（技术背景）',company:'样本企业甲',city:'北京·海淀区',description:'负责 AI 产品规划与产品方向制定。推进大模型应用产品设计、落地与迭代。'},
+ {key:'manager',title:'产品经理（企业服务）',company:'样本企业乙',city:'北京·朝阳区',description:'负责大模型应用产品设计与迭代，组织用户研究与需求分析。'},
+ {key:'engineer',title:'算法工程师',company:'样本企业丙',city:'北京',description:'训练模型、调优推理性能，为公司产品提供技术支持。'},
+ {key:'shanghai',title:'AI产品负责人',company:'样本企业丁',city:'上海',description:'负责AI产品规划及设计。'},
+ {key:'agent',title:'智能体产品运营',company:'样本企业戊',city:'北京·海淀区',description:'负责智能体产品运营和产品商业化。'},
+ {key:'aigc',title:'AIGC产品负责人',company:'样本企业己',city:'北京',description:'负责AIGC产品规划、研发协作与产品迭代。'},
+ {key:'unclear',title:'智能业务负责人',company:'样本企业庚',city:'北京',description:'探索新的业务机会，组织跨团队合作。'},
+ {key:'platform',title:'AI平台产品经理',company:'样本企业辛',city:'北京',description:'负责AI平台产品需求与产品迭代。'}
+];
+let count=4, selected='director', epoch=0;const contacts=new Set(),resumes=new Set();
+const list=document.getElementById('job-list'),detail=document.getElementById('detail');
+function render(){const top=list.scrollTop;list.replaceChildren();for(const job of data.slice(0,count)){
+ const card=document.createElement('article');card.className='job-card'+(job.key===selected?' selected':'');card.dataset.key=job.key;
+ for(const field of ['title','company','city']){const node=document.createElement('div');node.className=field;node.textContent=job[field];card.append(node)}
+ card.onclick=()=>select(job.key);list.append(card);
+}if(count===data.length){const end=document.createElement('p');end.dataset.end='true';end.textContent='没有更多岗位';list.append(end)}list.scrollTop=top;}
+function show(key){const job=data.find(x=>x.key===key);detail.dataset.key=key;detail.innerHTML='';for(const field of ['title','company','city','description']){const node=document.createElement('div');node.className=field;node.textContent=job[field];detail.append(node)}const btn=document.createElement('button');btn.dataset.contact='true';btn.textContent=contacts.has(key)?'继续沟通':'立即沟通';btn.onclick=()=>chat(key);detail.prepend(btn);}
+function select(key){selected=key;const version=++epoch;render();setTimeout(()=>{if(version===epoch)show(key)},Number(document.getElementById('delay').value));}
+function chat(key){const mode=document.getElementById('scenario').value;const box=document.createElement('section');box.id='chat';box.dataset.key=mode==='mismatch'?'wrong-key':key;box.dataset.conversation='conversation-'+key;
+ box.innerHTML='<h2>与样本招聘人沟通</h2><div class="messages"></div><p data-resume-name>AI产品经理.pdf</p><div class="resume"></div><button data-restore>返回岗位列表</button>';
+ const messages=box.querySelector('.messages');if(mode!=='open'){contacts.add(key);const sent=document.createElement('p');sent.dataset.contactSent='true';sent.dataset.sentAt=String(Date.now()/1000);sent.textContent='已发送默认招呼：您好，我对该岗位感兴趣。';messages.append(sent)}else messages.innerHTML='<p>聊天已打开，尚未发送任何消息。</p>';
+ const resume=box.querySelector('.resume');if(mode==='wait'){resume.innerHTML='<p data-waiting>需要招聘方同意后才能发送简历</p>'}else if(resumes.has(key)){resume.innerHTML='<p data-resume-sent>简历已发送：AI产品经理.pdf</p>'}else{const btn=document.createElement('button');btn.dataset.resumeSend='true';btn.textContent='发送简历';btn.onclick=()=>{resumes.add(key);resume.innerHTML='<p data-resume-sent>简历已发送：AI产品经理.pdf</p>';resume.firstElementChild.dataset.sentAt=String(Date.now()/1000)};resume.append(btn)}
+ box.querySelector('[data-restore]').onclick=()=>{box.remove();show(key)};document.body.append(box);}
+list.addEventListener('scroll',()=>{if(list.scrollTop+list.clientHeight>=list.scrollHeight-80 && count<data.length && !document.querySelector('[data-loading]')){const loading=document.createElement('p');loading.dataset.loading='true';loading.textContent='正在加载下一批…';list.append(loading);setTimeout(()=>{count=Math.min(count+2,data.length);render()},350)}});
+document.getElementById('block').onclick=()=>{const el=document.createElement('p');el.dataset.blocked='true';el.textContent='操作受限，请稍后处理';document.body.prepend(el)};
+render();show(selected);
+</script></body></html>

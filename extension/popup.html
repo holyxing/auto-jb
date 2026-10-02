@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Auto JB 扩展</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        width: 390px;
+        margin: 0;
+        padding: 18px;
+        font: 13px system-ui;
+        color: #263442;
+        background: #fff;
+      }
+      h1 {
+        font-size: 18px;
+        margin: 0;
+      }
+      h2 {
+        font-size: 13px;
+        margin: 0 0 12px;
+      }
+      p {
+        line-height: 1.65;
+        margin: 8px 0;
+      }
+      header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+      }
+      small,
+      .muted {
+        font-size: 11px;
+        color: #637585;
+      }
+      section {
+        padding: 14px 0;
+        border-bottom: 1px solid #e2e7eb;
+      }
+      label {
+        display: block;
+        margin-bottom: 8px;
+      }
+      input,
+      button,
+      textarea,
+      select {
+        font: inherit;
+        padding: 8px;
+        border: 1px solid #ccd3db;
+        border-radius: 4px;
+        box-sizing: border-box;
+      }
+      input:not([type="checkbox"]),
+      textarea,
+      select {
+        width: 100%;
+        margin-top: 5px;
+      }
+      input[type="checkbox"] {
+        width: auto;
+      }
+      button {
+        background: #f6f8fa;
+        color: #263442;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      .primary {
+        background: #1b646a;
+        color: white;
+        border-color: #1b646a;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+      }
+      .row > * {
+        flex: 1;
+        min-width: 0;
+      }
+      .full {
+        width: 100%;
+        margin: 6px 0;
+      }
+      .status {
+        background: #eef3f5;
+        padding: 4px 6px;
+        border-radius: 3px;
+        font-size: 11px;
+      }
+      .message {
+        color: #805b1b;
+        font-size: 12px;
+      }
+      #error {
+        color: #a53131;
+        white-space: pre-wrap;
+      }
+      #page {
+        font-weight: 600;
+      }
+      #counts {
+        font-weight: 600;
+        font-size: 14px;
+      }
+      textarea {
+        height: 220px;
+        font: 11px monospace;
+      }
+      pre {
+        font-size: 11px;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      summary {
+        cursor: pointer;
+        padding: 10px 0;
+      }
+      a {
+        color: #176064;
+      }
+      details {
+        border-bottom: 1px solid #e2e7eb;
+      }
+      .controls {
+        position: sticky;
+        top: 0;
+        background: white;
+        z-index: 5;
+        padding: 8px 0;
+        border-bottom: 1px solid #e2e7eb;
+      }
+      [hidden] {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>AI 产品岗位助手</h1>
+      <span id="state" class="status">尚未启动</span>
+    </header>
+    <p id="status" class="muted">读取连接…</p>
+    <p id="error" role="alert"></p>
+    <div class="row controls">
+      <button id="pause" disabled>暂停 / 接管</button
+      ><button id="resume" disabled>恢复</button
+      ><button id="stop" disabled>停止</button>
+    </div>
+    <section>
+      <label>当前受控页面<select id="connection"></select></label>
+      <p id="source" class="muted"></p>
+      <p id="page"></p>
+      <p id="blocked" class="message"></p>
+      <p id="capability" class="muted"></p>
+      <p id="chat-probe" class="muted"></p>
+      <button id="chat-baseline" class="full" hidden>记录当前会话消息基线（只读）</button>
+      <button id="broad" class="full" hidden>打开北京 AI产品经理搜索页</button>
+      <button id="open-liepin" class="full">打开猎聘北京 AI产品经理搜索页</button>
+    </section>
+    <section>
+      <div class="row">
+        <label
+          >本轮合格岗位上限<input
+            id="limit"
+            type="number"
+            min="1"
+            max="200"
+            value="20" /></label
+        ><label
+          >最长分钟数<input
+            id="minutes"
+            type="number"
+            min="1"
+            max="120"
+            value="30"
+        /></label>
+      </div>
+      <label id="resume-option"
+        ><input id="send-resume" type="checkbox" />
+        入口可用时自动发送站内简历</label
+      ><label id="resume-field" hidden
+        >绑定的站内附件名称<input
+          id="resume-name"
+          placeholder="与站内显示的文件名一致"
+      /></label>
+      <button id="auto" class="primary full" disabled>
+        开始自动沟通与投递
+      </button>
+      <div class="row">
+        <button id="scan" disabled>只读取与判断</button
+        ><button id="verify" disabled>验证当前岗位</button>
+      </div>
+      <p id="usage" class="muted">
+        验证会联系当前岗位招聘方，并可能发送站内默认招呼。正常任务自动逐项处理，无逐岗位审批。
+      </p>
+      <p class="muted">20 个 / 30 分钟为可调整工程预算。</p>
+    </section>
+    <section>
+      <p id="progress"></p>
+      <p id="counts"></p>
+      <p id="pending" class="muted"></p>
+      <p id="action" class="muted"></p>
+      <p id="reason" class="message"></p>
+
+      <button id="continue" class="full" disabled>续接上一批</button>
+      <p class="muted">
+        关闭扩展弹窗不停止任务。结果未知时先核对招聘平台，再在下方登记；不会盲目重发。
+      </p>
+    </section>
+    <details id="unknown-records" hidden>
+      <summary>登记结果未知的动作</summary>
+      <p class="muted">仅在招聘平台核对后登记；此处不会再次点击岗位。</p>
+      <label>岗位与动作<select id="unknown-command"></select></label>
+      <label>核验结论
+        <select id="unknown-outcome">
+          <option value="">请选择核验结论</option>
+          <option value="NO_EFFECT">明确没有产生外部效果</option>
+          <option id="unknown-success" value="CONTACT_INITIATED">确认已联系</option>
+        </select>
+      </label>
+      <label>核验依据<input id="unknown-note" placeholder="例如：已在对应平台会话中核对，至少 5 字" /></label>
+      <button id="unknown-save" class="full" disabled>保存核验结果</button>
+    </details>
+    <details id="pairing">
+      <summary>连接本机服务</summary>
+      <label
+        >一次性配对码<input
+          id="code"
+          autocomplete="off"
+          placeholder="工作台生成的 10 位配对码"
+      /></label>
+      <div class="row">
+        <button id="pair">连接</button><button id="disconnect">断开</button>
+      </div>
+      <p>
+        <a href="http://127.0.0.1:17830" target="_blank"
+          >打开本机工作台：配对 / 详细账本</a
+        >
+      </p>
+    </details>
+    <details>
+      <summary>页面诊断</summary>
+      <pre id="diagnostic"></pre>
+    </details>
+    <details>
+      <summary>开发者页面校准配置</summary>
+      <p class="muted">
+        真实页面需核对稳定账号与岗位身份、聊天和发送证据。配置变更会使旧验证失效，不执行任意脚本。
+      </p>
+      <textarea id="profile" spellcheck="false"></textarea
+      ><button id="save">保存校准配置</button>
+    </details>
+    <script src="popup.js"></script>
+  </body>
+</html>

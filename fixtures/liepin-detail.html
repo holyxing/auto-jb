@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>猎聘职位明细</title></head>
+<body>
+  <header style="display:flex;justify-content:space-between;align-items:center">
+    <h1>AI产品经理</h1>
+    <button id="chat" style="margin-top:12px" onclick="this.textContent='继续聊';const times=JSON.parse(localStorage.getItem('chatTimes')||'[]');times.push(Date.now());localStorage.setItem('chatTimes',JSON.stringify(times));const trusted=JSON.parse(localStorage.getItem('chatTrusted')||'[]');trusted.push(event.isTrusted);localStorage.setItem('chatTrusted',JSON.stringify(trusted));">聊一聊</button>
+  </header>
+</body>
+</html>

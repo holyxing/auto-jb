@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Auto JB 本地求职助手",
+  "version": "0.1.0",
+  "description": "在本机工作台授权范围内读取职位、操作页面并核验结果。",
+  "permissions": ["storage", "tabs", "debugger"],
+  "host_permissions": ["http://127.0.0.1:17830/*", "https://www.zhipin.com/*", "https://www.liepin.com/*"],
+  "background": { "service_worker": "worker.js" },
+  "action": { "default_popup": "popup.html" },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.zhipin.com/*",
+        "https://www.liepin.com/zhaopin/*",
+        "http://127.0.0.1:17830/fixture*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

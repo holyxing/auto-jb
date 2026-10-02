@@ -1,0 +1,34 @@
+name: auto-jb
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: auto_jb
+      POSTGRES_USER: auto_jb
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run setup first}
+    volumes: ["db:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auto_jb -d auto_jb"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://auto_jb:${POSTGRES_PASSWORD}@postgres:5432/auto_jb
+      AUTOJB_ADMIN_TOKEN: ${AUTOJB_ADMIN_TOKEN:?Run setup first}
+      AUTOJB_FIXTURE_ENABLED: ${AUTOJB_FIXTURE_ENABLED:-false}
+      AUTOJB_USE_JEV: ${AUTOJB_USE_JEV:-false}
+      TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
+      TYPESAFE_MODEL: ${TYPESAFE_MODEL:-jev-latest}
+      AUTOJB_ORIGIN: http://127.0.0.1:${AUTOJB_PORT:-17830}
+    ports: ["127.0.0.1:${AUTOJB_PORT:-17830}:8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+volumes:
+  db:
