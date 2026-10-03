@@ -1,5 +1,5 @@
 import type { Card, Command, Detail, Snapshot } from "./types";
-import { isConfiguredLiepinJobsUrl } from "./liepinJobsUrl";
+import { isConfiguredLiepinJobsUrl, LIEPIN_JOBS_URL } from "./liepinJobsUrl";
 
 export const liepinProfile = { name: "liepin-click-v2" };
 
@@ -131,7 +131,7 @@ export class LiepinAdapter {
   automatedPointerTarget: HTMLElement | null = null;
   automatedPointerPoint: readonly [number, number] | null = null;
   automatedPointerUntil = 0;
-  constructor(public documentId: string) {}
+  constructor(public documentId: string, public jobsUrl = LIEPIN_JOBS_URL) {}
 
   private rows(): { card: Card; row: HTMLElement }[] {
     const rows: { card: Card; row: HTMLElement }[] = [];
@@ -145,7 +145,7 @@ export class LiepinAdapter {
   }
 
   async snapshot(): Promise<Snapshot> {
-    const searchLimited = !isConfiguredLiepinJobsUrl(location.href);
+    const searchLimited = !isConfiguredLiepinJobsUrl(location.href, this.jobsUrl);
     let blocked = "";
     const evidence = accountEvidence();
     const account = evidence ? (await fingerprint(evidence)).slice(0, 24) : "unverified";
@@ -158,7 +158,7 @@ export class LiepinAdapter {
       recruiter: "",
       contact_button: state,
     } : null;
-    if (searchLimited) blocked = "请打开猎聘北京 AI产品经理搜索页";
+    if (searchLimited) blocked = "请打开已配置的猎聘北京搜索页";
     else if (account === "unverified") blocked = "无法确认猎聘登录账号的稳定头像标识";
     else if (!rows.length) blocked = "未找到猎聘岗位列表";
     else if (this.selectedKey && !selected) blocked = "待选岗位已从猎聘列表消失";
@@ -167,7 +167,7 @@ export class LiepinAdapter {
     const next = nextPageButton();
     return {
       source: "liepin", account, session: "worker-stamps", tab: 0,
-      document: this.documentId, profile: `liepin:${this.profile.name}:v1`,
+      document: this.documentId, profile: `liepin:${this.profile.name}:${(await fingerprint(this.jobsUrl)).slice(0, 12)}`,
       url: location.origin + location.pathname, selection_epoch: this.epoch,
       phase: blocked ? "BLOCKED" : "LIST",
       cards: rows.map((item) => item.card), detail, chat: null, blocked,

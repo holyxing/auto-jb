@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { BOSS_JOBS_URL, isConfiguredBossJobsUrl } from "../../extension/src/bossJobsUrl";
+import { BOSS_JOBS_URL, isConfiguredBossJobsUrl, parseBossJobsUrl } from "../../extension/src/bossJobsUrl";
 
 it("uses the user-specified Beijing AI product manager search URL", () => {
   expect(new URL(BOSS_JOBS_URL).searchParams.get("query")).toBe("AI产品经理");
@@ -13,4 +13,13 @@ it("rejects other cities, keywords and extra filters", () => {
   expect(isConfiguredBossJobsUrl(BOSS_JOBS_URL + "&experience=104")).toBe(false);
   expect(isConfiguredBossJobsUrl(BOSS_JOBS_URL + "&query=算法")).toBe(false);
   expect(isConfiguredBossJobsUrl("https://www.zhipin.com/web/geek/jobs?city=101010100")).toBe(false);
+});
+
+it("accepts a configured Beijing keyword and rejects unsafe search URLs", () => {
+  const configured = BOSS_JOBS_URL.replace("AI%E4%BA%A7%E5%93%81%E7%BB%8F%E7%90%86", "AI%20Agent%E4%BA%A7%E5%93%81");
+  expect(parseBossJobsUrl(configured)).toBe(configured);
+  expect(isConfiguredBossJobsUrl(configured + "&page=3", configured)).toBe(true);
+  expect(isConfiguredBossJobsUrl(BOSS_JOBS_URL, configured)).toBe(false);
+  expect(() => parseBossJobsUrl(configured.replace("101010100", "101020100"))).toThrow();
+  expect(() => parseBossJobsUrl(configured + "&salary=50")).toThrow();
 });

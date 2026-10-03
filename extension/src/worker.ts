@@ -2,7 +2,12 @@ import { compareBossChat, type BossChatProbe } from "./bossChat";
 import { isConfiguredBossJobsUrl } from "./bossJobsUrl";
 import { discoveryProfile } from "./profiles";
 import { isConfiguredLiepinJobsUrl } from "./liepinJobsUrl";
+import { parseSearchSettings } from "./searchSettings";
 const API = "http://127.0.0.1:17830";
+async function searchSettings() {
+  const stored = await chrome.storage.local.get("searchSettings");
+  return parseSearchSettings(stored.searchSettings);
+}
 function fromPage(sender: chrome.runtime.MessageSender) {
   if (!sender.tab?.id || !sender.url) return false;
   const u = new URL(sender.url);
@@ -253,7 +258,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (message.type === "clickLiepinDetail") {
       const url = new URL(sender.url!);
       if (url.origin !== "https://www.liepin.com" || url.pathname !== "/zhaopin/" ||
-          !isConfiguredLiepinJobsUrl(url))
+          !isConfiguredLiepinJobsUrl(url, (await searchSettings()).liepinUrl))
         throw new Error("仅允许在猎聘北京职位列表打开明细");
       const path = message.path;
       if (typeof path !== "string" || !/^\/(a|job)\/\d+\.shtml$/.test(path))
@@ -349,6 +354,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       return {
         paired: !!stored.deviceToken,
         profile: stored.bossProfile ?? null,
+        searchSettings: await searchSettings(),
       };
     }
     if (
@@ -368,8 +374,9 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     snap.url = u.origin + u.pathname;
     snap.source = u.origin === API ? "fixture" :
       u.origin === "https://www.liepin.com" ? "liepin" : "boss";
-    if (snap.source === "boss") snap.search_limited = !isConfiguredBossJobsUrl(u);
-    if (snap.source === "liepin") snap.search_limited = !isConfiguredLiepinJobsUrl(u);
+    const search = await searchSettings();
+    if (snap.source === "boss") snap.search_limited = !isConfiguredBossJobsUrl(u, search.bossUrl);
+    if (snap.source === "liepin") snap.search_limited = !isConfiguredLiepinJobsUrl(u, search.liepinUrl);
     await chrome.storage.local.set({
       lastDiagnostic: {
         at: Date.now(),

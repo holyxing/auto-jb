@@ -1,5 +1,5 @@
 import type { Profile, Snapshot, Card, Command, Detail, Chat } from "./types";
-import { isConfiguredBossJobsUrl } from "./bossJobsUrl";
+import { BOSS_JOBS_URL, isConfiguredBossJobsUrl } from "./bossJobsUrl";
 declare const __ADAPTER_VERSION__: string;
 const implementation =
   typeof __ADAPTER_VERSION__ === "undefined"
@@ -77,6 +77,7 @@ export class Adapter {
     public profile: Profile,
     public source: "boss" | "fixture",
     public documentId: string,
+    public jobsUrl = BOSS_JOBS_URL,
   ) {}
   async snapshot(): Promise<Snapshot> {
     const p = this.profile;
@@ -90,7 +91,7 @@ export class Adapter {
     let listEnd = false;
     let loading = false;
     const searchLimited =
-      this.source === "boss" && !isConfiguredBossJobsUrl(location.href);
+      this.source === "boss" && !isConfiguredBossJobsUrl(location.href, this.jobsUrl);
     try {
       listEnd = !!one(document, p.end);
       loading = !!one(document, p.loading);
@@ -189,7 +190,7 @@ export class Adapter {
         ) blocked = "左右岗位标题、公司或地点不一致";
       }
       if (searchLimited)
-        blocked = "当前职位页不是设定的北京 AI产品经理搜索入口，请点击扩展中的打开职位页";
+        blocked = "当前职位页不是扩展配置的北京搜索入口，请点击扩展中的打开职位页";
     } catch (e) {
       blocked = e instanceof Error ? e.message : "页面读取异常";
     }
@@ -201,7 +202,7 @@ export class Adapter {
       session: "worker-stamps",
       tab: 0,
       document: this.documentId,
-      profile: `${implementation}:${p.name}:${(await hash(JSON.stringify(p))).slice(0, 12)}`,
+      profile: `${implementation}:${p.name}:${(await hash(JSON.stringify(p) + this.jobsUrl)).slice(0, 12)}`,
       url: location.origin + location.pathname,
       selection_epoch: this.epoch,
       phase: blocked ? "BLOCKED" : chat ? "CHAT" : "LIST",

@@ -5,7 +5,7 @@ import path from "node:path";
 
 const base = "http://127.0.0.1:17830";
 const admin = readFileSync(".env", "utf8").match(/^AUTOJB_ADMIN_TOKEN=(.+)$/m)![1].trim();
-const liepinUrl = "https://www.liepin.com/zhaopin/?city=010&dq=010&key=ai产品经理&workYearCode=0";
+const liepinUrl = "https://www.liepin.com/zhaopin/?city=010&dq=010&key=AI产品&workYearCode=0";
 
 test("Liepin fixture: open detail, click chat, close detail, skip contacted and out-of-city", async () => {
   const profile = mkdtempSync(path.resolve(".runtime/liepin-e2e-"));
@@ -23,7 +23,13 @@ test("Liepin fixture: open detail, click chat, close detail, skip contacted and 
     })).json();
     const popup = await context.newPage();
     await popup.goto(`chrome-extension://${new URL(worker.url()).host}/popup.html`);
-    await popup.evaluate((token) => chrome.storage.local.set({ deviceToken: token }), paired.token);
+    await popup.evaluate((token) => chrome.storage.local.set({
+      deviceToken: token,
+      searchSettings: {
+        bossUrl: "https://www.zhipin.com/web/geek/jobs?query=AI%E4%BA%A7%E5%93%81%E7%BB%8F%E7%90%86&city=101010100&industry=&position=",
+        liepinUrl: "https://www.liepin.com/zhaopin/?city=010&dq=010&key=AI%E4%BA%A7%E5%93%81&workYearCode=0",
+      },
+    }), paired.token);
     await popup.close();
     const jobId = String(Date.now());
     const account = createHash("sha256")
@@ -55,7 +61,8 @@ test("Liepin fixture: open detail, click chat, close detail, skip contacted and 
       return !!connection;
     }, { timeout: 15000 }).toBe(true);
     const startResponse = await context.request.post(`${base}/api/runs`, {
-      headers, data: { connection_id: connection, mode: "auto", max_jobs: 2, minutes: 2 },
+      headers, data: { connection_id: connection, mode: "auto", max_jobs: 2, minutes: 2,
+        contact_interval_seconds: 6 },
     });
     expect(startResponse.ok(), await startResponse.text()).toBe(true);
     const started = await startResponse.json();
@@ -73,7 +80,7 @@ test("Liepin fixture: open detail, click chat, close detail, skip contacted and 
       .toEqual([`a:${jobId}`, `a:${Number(jobId) + 1}`].sort());
     const clickTimes = await page.evaluate(() => JSON.parse(localStorage.getItem("chatTimes") || "[]"));
     expect(clickTimes).toHaveLength(2);
-    expect(clickTimes[1] - clickTimes[0]).toBeGreaterThanOrEqual(5000);
+    expect(clickTimes[1] - clickTimes[0]).toBeGreaterThanOrEqual(6000);
     expect(await page.evaluate(() => JSON.parse(localStorage.getItem("chatTrusted") || "[]"))).toEqual([true, true]);
     expect(commands.filter((item: any) => item.action === "CONTACT")
       .every((item: any) => item.result?.effect_observed === true)).toBe(true);

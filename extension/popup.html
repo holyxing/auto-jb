@@ -164,9 +164,20 @@
       <p id="capability" class="muted"></p>
       <p id="chat-probe" class="muted"></p>
       <button id="chat-baseline" class="full" hidden>记录当前会话消息基线（只读）</button>
-      <button id="broad" class="full" hidden>打开北京 AI产品经理搜索页</button>
-      <button id="open-liepin" class="full">打开猎聘北京 AI产品经理搜索页</button>
+      <button id="broad" class="full" hidden>打开配置的 BOSS 北京搜索页</button>
+      <button id="open-liepin" class="full">打开配置的猎聘北京搜索页</button>
     </section>
+    <details id="automation-settings">
+      <summary>搜索入口与点击间隔</summary>
+      <p class="muted">仅支持北京职位搜索页；可修改搜索关键词。运行中须先暂停或停止，已领取动作结束后再保存。</p>
+      <label>BOSS 搜索 URL<input id="boss-search-url" type="url" spellcheck="false" /></label>
+      <label>猎聘搜索 URL<input id="liepin-search-url" type="url" spellcheck="false" /></label>
+      <label>两次沟通点击的最短间隔（秒）
+        <input id="contact-interval" type="number" min="5" max="120" step="1" value="5" />
+      </label>
+      <button id="save-search-settings" class="full">保存设置</button>
+      <p id="settings-status" class="muted"></p>
+    </details>
     <section>
       <div class="row">
         <label

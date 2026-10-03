@@ -14,6 +14,10 @@ SITE_CONTACT_INTERVAL_SECONDS = 5
 CLICK_SOURCES = {"boss", "liepin"}
 
 
+def contact_interval(run):
+    return run.settings.get("contact_interval_seconds", SITE_CONTACT_INTERVAL_SECONDS)
+
+
 def site_click_profile(snap):
     expected = "liepin-click-v2" if snap["source"] == "liepin" else "boss-click-v1"
     return f":{expected}:" in snap["profile"]
@@ -76,7 +80,7 @@ def site_contact_history(db, account_scope):
     return prior
 
 
-def site_contact_cooldown_until(db, account_scope):
+def site_contact_cooldown_until(db, account_scope, interval_seconds=SITE_CONTACT_INTERVAL_SECONDS):
     """Use server-side receipts; uncertain clicks wait past their full command window."""
     until = 0.0
     rows = db.scalars(
@@ -91,9 +95,9 @@ def site_contact_cooldown_until(db, account_scope):
             # Older receipts have no server-side click timestamp. The command
             # could have clicked until its expiry, so use that as a safe bound.
             anchor = recorded_at if isinstance(recorded_at, (int, float)) else cmd.expires
-            until = max(until, anchor + SITE_CONTACT_INTERVAL_SECONDS)
+            until = max(until, anchor + interval_seconds)
         elif cmd.status in {"CLAIMED", "UNKNOWN"}:
-            until = max(until, cmd.expires + SITE_CONTACT_INTERVAL_SECONDS)
+            until = max(until, cmd.expires + interval_seconds)
     return until
 
 
@@ -193,7 +197,7 @@ def plan(db, connection, snap):
         complete(run, "BUDGET_REACHED")
         return {"command": None, "status": run.status}
     if snap["source"] in CLICK_SOURCES and run.mode != "scan" and (
-        site_contact_cooldown_until(db, run.scope) > time.time()
+        site_contact_cooldown_until(db, run.scope, contact_interval(run)) > time.time()
     ):
         return {"command": None, "status": run.status}
     for card in snap["cards"]:
@@ -343,8 +347,8 @@ def claim(db, command_id, connection, snap):
             raise HTTPException(409, "重复或未决外部动作")
         if site_click and cmd.job_key in site_contact_history(db, run.scope):
             raise HTTPException(409, "该岗位已有历史沟通记录，禁止再次点击")
-        if site_click and site_contact_cooldown_until(db, run.scope) > time.time():
-            raise HTTPException(409, "距上次沟通点击不足 5 秒，请等待")
+        if site_click and site_contact_cooldown_until(db, run.scope, contact_interval(run)) > time.time():
+            raise HTTPException(409, "距上次沟通点击未达到本轮间隔，请等待")
         setattr(job, attr, "INITIATING" if cmd.action == "CONTACT" else "SENDING")
     cmd.status = "CLAIMED"
     # The BOSS contact click retains a 500 ms local click deadline. Its longer
@@ -401,7 +405,7 @@ def finish(db, cmd, connection, result):
                 cfg = dict(run.settings)
                 cfg["done"] = list(dict.fromkeys([*cfg.get("done", []), cmd.job_key]))
                 cfg["active_key"] = ""
-                cfg["cooldown_until"] = receipt["click_recorded_at"] + SITE_CONTACT_INTERVAL_SECONDS
+                cfg["cooldown_until"] = receipt["click_recorded_at"] + contact_interval(run)
                 run.settings = cfg
                 if not ok:
                     pause(db, run, "已点击但沟通后弹层未能安全关闭，请人工核对")

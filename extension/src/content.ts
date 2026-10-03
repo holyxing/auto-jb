@@ -4,6 +4,7 @@ import type { Command } from "./types";
 import { sameView } from "./snapshot";
 import { observeBossChat } from "./bossChat";
 import { LiepinAdapter, liepinProfile } from "./liepinAdapter";
+import type { SearchSettings } from "./searchSettings";
 async function rpc(message: unknown) {
   const result = await chrome.runtime.sendMessage(message);
   if (!result?.ok) throw new Error(result?.error ?? "扩展连接中断");
@@ -29,6 +30,8 @@ async function loop() {
   try {
     const config = await rpc({ type: "config" });
     if (!config.paired) return;
+    const search = config.searchSettings as SearchSettings;
+    const jobsUrl = source === "liepin" ? search.liepinUrl : search.bossUrl;
     const p = source === "liepin"
       ? liepinProfile
       : source === "fixture"
@@ -36,10 +39,11 @@ async function loop() {
         : config.profile
           ? validateProfile(config.profile)
           : discoveryProfile;
-    if (!adapter || JSON.stringify(adapter.profile) !== JSON.stringify(p)) {
+    if (!adapter || JSON.stringify(adapter.profile) !== JSON.stringify(p) ||
+        adapter.jobsUrl !== jobsUrl) {
       adapter = source === "liepin"
-        ? new LiepinAdapter(crypto.randomUUID())
-        : new Adapter(p as typeof fixtureProfile, source, crypto.randomUUID());
+        ? new LiepinAdapter(crypto.randomUUID(), jobsUrl)
+        : new Adapter(p as typeof fixtureProfile, source, crypto.randomUUID(), jobsUrl);
       // New document/worker handshake must never silently resume an old action loop.
       await bridge("/api/bridge/halt", await adapter.snapshot());
     }

@@ -3,6 +3,7 @@ import time
 
 from auto_jb.db import Command, Run
 from conftest import snapshot, start_verify
+from sqlalchemy import select
 
 
 def elapsed_boss_cooldown(app, command_id):
@@ -419,7 +420,7 @@ def test_liepin_nationwide_search_cannot_start_auto(system):
         "connection_id": connection, "mode": "auto",
     })
     assert response.status_code == 409
-    assert "北京 AI产品经理" in response.json()["detail"]
+    assert "扩展配置的北京搜索入口" in response.json()["detail"]
 
 
 def test_liepin_covered_button_is_recorded_as_no_effect_before_click(system):
@@ -709,7 +710,7 @@ def test_boss_claim_rechecks_prior_contact_command(system):
     assert "历史沟通" in claim.json()["detail"]
 
 
-def test_boss_claim_enforces_five_second_account_cooldown(system):
+def test_boss_claim_enforces_configured_account_cooldown(system):
     c, a, b, app = system
     snap = {
         **snapshot("second"), "source": "boss", "url": "https://www.zhipin.com/web/geek/jobs",
@@ -717,7 +718,15 @@ def test_boss_claim_enforces_five_second_account_cooldown(system):
         "profile": "test:boss-click-v1:abcdef123456",
     }
     connection = c.post("/api/bridge/tick", headers=b, json=snap).json()["connection_id"]
-    c.post("/api/runs", headers=a, json={"connection_id": connection, "mode": "verify"})
+    assert c.post("/api/runs", headers=a, json={
+        "connection_id": connection, "mode": "verify", "contact_interval_seconds": 4,
+    }).status_code == 422
+    assert c.post("/api/runs", headers=a, json={
+        "connection_id": connection, "mode": "verify", "contact_interval_seconds": 121,
+    }).status_code == 422
+    c.post("/api/runs", headers=a, json={
+        "connection_id": connection, "mode": "verify", "contact_interval_seconds": 12,
+    })
     command = c.post("/api/bridge/tick", headers=b, json=snap).json()["command"]
     with app.state.factory.begin() as db:
         past = Run(
@@ -730,11 +739,16 @@ def test_boss_claim_enforces_five_second_account_cooldown(system):
         db.add(Command(
             run_id=past.id, job_key="first", action="CONTACT", status="SUCCEEDED",
             epoch=1, binding={}, expires=time.time() - 1,
-            result={"outcome": "OK", "click_dispatched": True, "click_recorded_at": time.time()},
+            result={"outcome": "OK", "click_dispatched": True, "click_recorded_at": time.time() - 6},
         ))
     claim = c.post(f"/api/bridge/commands/{command['id']}/claim", headers=b, json=snap)
     assert claim.status_code == 409
-    assert "不足 5 秒" in claim.json()["detail"]
+    assert "本轮间隔" in claim.json()["detail"]
+    with app.state.factory.begin() as db:
+        past = db.scalar(select(Run).where(Run.status == "COMPLETED", Run.scope == "boss:test-account"))
+        previous = db.scalar(select(Command).where(Command.run_id == past.id))
+        previous.result = {**previous.result, "click_recorded_at": time.time() - 13}
+    assert c.post(f"/api/bridge/commands/{command['id']}/claim", headers=b, json=snap).status_code == 200
 
 
 def test_other_search_cannot_start_even_read_only_scan(system):
@@ -744,7 +758,7 @@ def test_other_search_cannot_start_even_read_only_scan(system):
     connection = c.post("/api/bridge/tick", headers=b, json=snap).json()["connection_id"]
     response = c.post("/api/runs", headers=a, json={"connection_id": connection, "mode": "scan"})
     assert response.status_code == 409
-    assert "设定的北京 AI产品经理搜索入口" in response.json()["detail"]
+    assert "扩展配置的北京搜索入口" in response.json()["detail"]
 
 
 def test_expired_claim_and_account_change(system):

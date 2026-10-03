@@ -11,4 +11,5 @@ dist/
 playwright-report/
 test-results/
 *.sqlite*
+*.zip
 .DS_Store

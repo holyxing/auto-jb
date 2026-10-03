@@ -248,6 +248,7 @@ def create_app(database_url=None, admin_token=None, fixture_enabled=None):
                         ]
                     },
                     "cooldown_until": r.settings.get("cooldown_until", 0),
+                    "contact_interval_seconds": flow.contact_interval(r),
                     "source": r.scope.partition(":")[0],
                     "sample": r.scope.startswith("fixture:") or r.scope in sample_scopes
                     or r.id in sample_runs,
@@ -317,7 +318,7 @@ def create_app(database_url=None, admin_token=None, fixture_enabled=None):
             raise HTTPException(409, "请返回可识别的岗位列表，先处理页面提示")
         site_click = s["source"] in flow.CLICK_SOURCES
         if site_click and s.get("search_limited"):
-            raise HTTPException(409, "当前职位页与设定的北京 AI产品经理搜索入口不一致")
+            raise HTTPException(409, "当前职位页与扩展配置的北京搜索入口不一致")
         if site_click and body.send_resume:
             raise HTTPException(409, "当前点击任务不发送简历，请取消自动发送简历")
         if body.mode != "scan" and site_click and (
@@ -365,11 +366,14 @@ def create_app(database_url=None, admin_token=None, fixture_enabled=None):
         settings = {
             "send_resume": body.send_resume and not site_click,
             "resume_name": body.resume_name,
+            "contact_interval_seconds": body.contact_interval_seconds,
             "done": [],
             "no_progress": 0,
         }
         if site_click:
-            settings["cooldown_until"] = flow.site_contact_cooldown_until(db, account_scope)
+            settings["cooldown_until"] = flow.site_contact_cooldown_until(
+                db, account_scope, body.contact_interval_seconds
+            )
         if previous and previous.mode == body.mode:
             settings["done"] = previous.settings.get("done", [])
         if body.mode == "verify":

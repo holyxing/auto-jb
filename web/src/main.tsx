@@ -335,7 +335,7 @@ function App() {
                   })}>生成配对码</button>
                   {pairCode && <output className="pair-code">{pairCode}</output>}
                 </li>
-                <li><strong>打开招聘平台</strong><p>保持登录，在岗位列表页使用扩展操作。</p>
+                <li><strong>打开招聘平台</strong><p>以下是默认北京搜索页；如已在扩展中修改关键词，请用扩展弹窗打开配置的页面。保持登录，在岗位列表页使用扩展操作。</p>
                   <div className="platform-links">
                     <a className="button secondary" target="_blank" rel="noreferrer"
                       href="https://www.zhipin.com/web/geek/jobs?query=AI%E4%BA%A7%E5%93%81%E7%BB%8F%E7%90%86&city=101010100&industry=&position=">

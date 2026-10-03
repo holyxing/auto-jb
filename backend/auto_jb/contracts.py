@@ -61,6 +61,7 @@ class Start(Strict):
     mode: Literal["scan", "verify", "auto"] = "scan"
     max_jobs: int = Field(default=20, ge=1, le=200)
     minutes: int = Field(default=30, ge=1, le=120)
+    contact_interval_seconds: int = Field(default=5, ge=5, le=120)
     send_resume: bool = False
     resume_name: str = Field(default="", max_length=200)
     previous_run: str | None = None
