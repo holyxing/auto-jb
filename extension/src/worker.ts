@@ -3,6 +3,7 @@ import { isConfiguredBossJobsUrl } from "./bossJobsUrl";
 import { discoveryProfile } from "./profiles";
 import { isConfiguredLiepinJobsUrl } from "./liepinJobsUrl";
 import { parseSearchSettings } from "./searchSettings";
+import { apiError } from "./httpError";
 const API = "http://127.0.0.1:17830";
 async function searchSettings() {
   const stored = await chrome.storage.local.get("searchSettings");
@@ -52,9 +53,7 @@ async function request(path: string, body: unknown, token?: string) {
   });
   const data = await response.json();
   if (!response.ok)
-    throw new Error(
-      typeof data.detail === "string" ? data.detail : "请求被拒绝",
-    );
+    throw new Error(apiError(response.status, data));
   return data;
 }
 const liepinDetailButton = `(() => {
