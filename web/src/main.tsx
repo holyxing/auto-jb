@@ -20,7 +20,7 @@ type Job = {
   id: string; source: Source; sample: boolean; scope: string; key: string;
   data: { title: string; company: string; city: string; description?: string };
   decision: string; reason: string; evidence: string[];
-  contact: string; resume: string; run_id: string;
+  contact: string; resume: string; resume_name?: string; resume_at?: number; run_id: string;
 };
 type Cmd = {
   id: string; run_id: string; source: Source; sample: boolean; scope: string; job_key: string;
@@ -41,6 +41,7 @@ const labels: Record<string, string> = {
   NEEDS_REVIEW: "待复核", NOT_STARTED: "未发起", INITIATING: "发起中",
   CHAT_OPENED: "聊天已打开", CONTACT_INITIATED: "已发起沟通",
   CLICKED: "已点击·待人工确认", ALREADY_CONTACTED: "历史已沟通",
+  CLOSED: "职位已下线",
   UNKNOWN: "结果未知", NOT_CHECKED: "尚未检查",
   UNAVAILABLE: "暂无可用入口", WAITING_PEER: "等待对方",
   READY: "可发送", SENDING: "发送中", SENT: "已发送简历",
@@ -54,6 +55,47 @@ const labels: Record<string, string> = {
 };
 const dateTime = (value: number) =>
   new Date(value * 1000).toLocaleString("zh-CN", { hour12: false });
+const PAGE_SIZE = 20;
+type ChartDim = "day" | "company" | "city" | "resume" | "result";
+type ChartStyle = "bar" | "column" | "line" | "area";
+type ChartRow = { label: string; counts: Record<Source, number>; total: number };
+const chartDims: { id: ChartDim; label: string }[] = [
+  { id: "day", label: "日期" },
+  { id: "company", label: "公司" },
+  { id: "city", label: "城市" },
+  { id: "resume", label: "简历名称" },
+  { id: "result", label: "结果" },
+];
+const chartStyles: { id: ChartStyle; label: string }[] = [
+  { id: "bar", label: "条形" },
+  { id: "column", label: "柱状" },
+  { id: "line", label: "曲线" },
+  { id: "area", label: "面积" },
+];
+const chartSources: Source[] = ["boss", "liepin", "fixture"];
+// 扩展已成功点击或已成功发出简历即计入，不等待人工确认。
+const extensionSuccess = (job: Job) =>
+  job.contact === "CLICKED" || job.contact === "CONTACT_INITIATED"
+  || job.resume === "SENT" || job.resume === "ALREADY_SENT";
+const shanghaiDay = (seconds: number) =>
+  new Date(seconds * 1000).toLocaleDateString("en-CA", { timeZone: "Asia/Shanghai" });
+function recentDays(count = 14) {
+  const days: string[] = [];
+  const start = new Date();
+  start.setHours(12, 0, 0, 0);
+  for (let offset = count - 1; offset >= 0; offset -= 1) {
+    const day = new Date(start);
+    day.setDate(start.getDate() - offset);
+    days.push(day.toLocaleDateString("en-CA", { timeZone: "Asia/Shanghai" }));
+  }
+  return days;
+}
+function pageOf<T>(items: T[], page: number) {
+  const pages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+  const current = Math.min(Math.max(page, 1), pages);
+  const start = (current - 1) * PAGE_SIZE;
+  return { rows: items.slice(start, start + PAGE_SIZE), page: current, pages, total: items.length };
+}
 const status = (value: string) => (
   <span className={
     "badge " +
@@ -79,6 +121,10 @@ function App() {
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [pairCode, setPairCode] = useState("");
   const [busy, setBusy] = useState(false);
+  const [chartDim, setChartDim] = useState<ChartDim>("day");
+  const [listPage, setListPage] = useState({
+    runs: 1, recentJobs: 1, jobs: 1, commands: 1, connections: 1,
+  });
 
   const api = useCallback(async (path: string, body?: unknown) => {
     const response = await fetch("/api" + path, {
@@ -108,6 +154,9 @@ function App() {
     const timer = setInterval(() => void load(), 5000);
     return () => clearInterval(timer);
   }, [load]);
+  useEffect(() => {
+    setListPage({ runs: 1, recentJobs: 1, jobs: 1, commands: 1, connections: 1 });
+  }, [platform, decision]);
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
     setError("");
@@ -160,8 +209,19 @@ function App() {
   const online = state?.connections.filter(
     (connection) => matches(connection) && Date.now() / 1000 - connection.seen_at < 15,
   ) ?? [];
-  const latestRuns = runs.slice().sort((a, b) => b.created_at - a.created_at).slice(0, 6);
+  const orderedRuns = runs.slice().sort((a, b) => b.created_at - a.created_at);
+  const orderedJobs = jobs.slice().reverse();
   const orderedCommands = commands.slice().sort((a, b) => b.issued_at - a.issued_at);
+  const filteredJobs = jobs.filter((job) => decision === "ALL" || job.decision === decision);
+  const connections = state?.connections.filter(matches) ?? [];
+  const runPage = pageOf(orderedRuns, listPage.runs);
+  const recentJobPage = pageOf(orderedJobs, listPage.recentJobs);
+  const jobPage = pageOf(filteredJobs, listPage.jobs);
+  const commandPage = pageOf(orderedCommands, listPage.commands);
+  const connectionPage = pageOf(connections, listPage.connections);
+  const sentResumes = jobs.filter(extensionSuccess);
+  const turn = (key: keyof typeof listPage, page: number) =>
+    setListPage((current) => ({ ...current, [key]: page }));
 
   if (!token) return (
     <main className="login">
@@ -248,38 +308,44 @@ function App() {
               {[
                 ["已记录岗位", jobs.length, "按平台和账号归档"],
                 ["符合范围", jobs.filter((job) => job.decision === "INCLUDE").length, "北京 AI 与产品岗位"],
-                ["已点击", jobs.filter((job) => job.contact === "CLICKED").length, "会话由人工确认"],
+                ["已点击", jobs.filter((job) => job.contact === "CLICKED").length, "扩展点击成功"],
                 ["结果未知", jobs.filter((job) => job.contact === "UNKNOWN").length, "保留去重，不自动重试"],
               ].map(([name, count, help]) => <div className="stat" key={name}>
                 <span>{name}</span><strong>{state ? count : "—"}</strong><small>{help}</small>
               </div>)}
             </section>
+            <ResumeChart jobs={sentResumes} commands={commands} dim={chartDim} onDim={setChartDim} />
             <div className="work-grid">
               <section className="panel">
                 <div className="panel-title"><h2>最近批次</h2>
                   <span className="muted">按招聘平台汇总</span></div>
-                {!latestRuns.length ? <Empty text="暂无执行批次。" /> :
+                {!orderedRuns.length ? <Empty text="暂无执行批次。" /> : <>
                   <div className="table-scroll"><table>
                     <thead><tr><th>平台</th><th>开始时间</th><th>方式</th><th>状态</th><th>岗位</th></tr></thead>
-                    <tbody>{latestRuns.map((run) => <tr key={run.id}>
+                    <tbody>{runPage.rows.map((run) => <tr key={run.id}>
                       <td>{platformTag(run.source, run.sample)}</td><td>{dateTime(run.created_at)}</td>
                       <td>{run.mode === "scan" ? "只读扫描" : run.mode === "verify" ? "单岗验证" : "自动批次"}</td>
                       <td>{status(run.status)}{run.reason && <small>{labels[run.reason] ?? run.reason}</small>}</td>
                       <td>{run.visited} / {run.budget}</td>
                     </tr>)}</tbody>
-                  </table></div>}
+                  </table></div>
+                  <Pager page={runPage.page} pages={runPage.pages} total={runPage.total}
+                    onPage={(value) => turn("runs", value)} />
+                </>}
               </section>
               <section className="panel">
                 <div className="panel-title"><h2>记录说明</h2><span className="badge">只读</span></div>
                 <p className="prose">“已点击”表示扩展完成一次按钮点击，不代表消息送达或简历发送。“结果未知”表示点击后缺少足够的平台反馈；该岗位保留去重，避免重复联系。</p>
-                <p className="prose">开始、暂停和续接任务请在对应招聘平台页面打开扩展操作。工作台只展示记录。</p>
+                <p className="prose">开始、暂停和续接任务请在对应招聘平台页面打开扩展操作。工作台只展示记录。扩展点击成功和简历发送成功都计入上方统计。</p>
               </section>
             </div>
             <section className="panel">
               <div className="panel-title"><h2>最近岗位</h2>
                 <button className="text-button" onClick={() => setPage("岗位记录")}>
                   查看全部 <ChevronRight size={14} /></button></div>
-              <Jobs jobs={jobs.slice(-5).reverse()} onSelect={setSelectedJob} />
+              <Jobs jobs={recentJobPage.rows} onSelect={setSelectedJob} />
+              <Pager page={recentJobPage.page} pages={recentJobPage.pages} total={recentJobPage.total}
+                onPage={(value) => turn("recentJobs", value)} />
             </section>
           </>}
 
@@ -290,25 +356,30 @@ function App() {
                 <option value="NEEDS_REVIEW">待复核</option><option value="EXCLUDE">不在范围</option>
               </select>
             </div>
-            <Jobs jobs={jobs.filter((job) => decision === "ALL" || job.decision === decision)}
-              onSelect={setSelectedJob} />
+            <Jobs jobs={jobPage.rows} onSelect={setSelectedJob} />
+            <Pager page={jobPage.page} pages={jobPage.pages} total={jobPage.total}
+              onPage={(value) => turn("jobs", value)} />
           </section>}
 
           {page === "执行记录" && <section className="panel">
             <div className="panel-title"><h2>执行记录</h2>
-              <span className="muted">最近 100 条及全部未决动作</span></div>
-            {!orderedCommands.length ? <Empty text="暂无执行记录。" /> :
+              <span className="muted">全部记录，每页 {PAGE_SIZE} 条</span></div>
+            {!orderedCommands.length ? <Empty text="暂无执行记录。" /> : <>
               <div className="table-scroll"><table>
                 <thead><tr><th>平台</th><th>时间</th><th>动作</th><th>岗位</th><th>结果</th><th>证据</th></tr></thead>
-                <tbody>{orderedCommands.map((command) => {
+                <tbody>{commandPage.rows.map((command) => {
                   const job = state?.jobs.find((item) =>
                     item.scope === command.scope && item.key === command.job_key);
                   const note = command.result?.note;
+                  const chat = (command.result?.snapshot as { chat?: { resume_name?: string } } | undefined)?.chat;
                   return <tr key={command.id}>
                     <td>{platformTag(command.source, command.sample)}</td><td>{dateTime(command.issued_at)}</td>
                     <td>{labels[command.action] ?? command.action}</td>
                     <td>{job ? <><strong>{job.data.title}</strong><small>
-                      {job.data.company} · {job.data.city}</small></> : command.job_key || "—"}</td>
+                      {job.data.company} · {job.data.city}
+                      {(job.resume_name || chat?.resume_name) && command.action === "RESUME_SEND"
+                        ? ` · ${job.resume_name || chat?.resume_name}` : ""}
+                    </small></> : command.job_key || "—"}</td>
                     <td>{status(command.status)}
                       {typeof note === "string" && note && <small>{note}</small>}</td>
                     <td><details><summary>查看记录</summary>
@@ -316,7 +387,10 @@ function App() {
                     </details></td>
                   </tr>;
                 })}</tbody>
-              </table></div>}
+              </table></div>
+              <Pager page={commandPage.page} pages={commandPage.pages} total={commandPage.total}
+                onPage={(value) => turn("commands", value)} />
+            </>}
           </section>}
 
           {page === "连接设置" && <div className="work-grid">
@@ -350,19 +424,22 @@ function App() {
             <section className="panel">
               <div className="panel-title"><h2>平台连接状态</h2>
                 <span className="muted">仅显示连接，不控制页面</span></div>
-              {!state?.connections.filter(matches).length
+              {!connections.length
                 ? <Empty text="暂无对应平台连接。" />
-                : <div className="table-scroll"><table>
-                  <thead><tr><th>平台</th><th>账号标识</th><th>最近连接</th><th>状态</th></tr></thead>
-                  <tbody>{state.connections.filter(matches)
-                    .map((connection) => <tr key={connection.id}>
+                : <>
+                  <div className="table-scroll"><table>
+                    <thead><tr><th>平台</th><th>账号标识</th><th>最近连接</th><th>状态</th></tr></thead>
+                    <tbody>{connectionPage.rows.map((connection) => <tr key={connection.id}>
                       <td>{platformTag(connection.source, connection.sample)}</td>
                       <td>{connection.account.slice(0, 8)}</td>
                       <td>{dateTime(connection.seen_at)}</td>
                       <td>{Date.now() / 1000 - connection.seen_at < 15 ? "在线" : "离线"}
                         {connection.blocked && <small>{connection.blocked}</small>}</td>
                     </tr>)}</tbody>
-                </table></div>}
+                  </table></div>
+                  <Pager page={connectionPage.page} pages={connectionPage.pages} total={connectionPage.total}
+                    onPage={(value) => turn("connections", value)} />
+                </>}
             </section>
           </div>}
         </main>
@@ -377,6 +454,8 @@ function App() {
           <h3>判断依据</h3><p>{selectedJob.reason}</p>
           {selectedJob.evidence.map((item, index) => <blockquote key={index}>{item}</blockquote>)}
           <h3>沟通与简历记录</h3><p>{status(selectedJob.contact)} {status(selectedJob.resume)}</p>
+          {selectedJob.resume_name && <p>简历文件：{selectedJob.resume_name}</p>}
+          {!!selectedJob.resume_at && <p>简历时间：{dateTime(selectedJob.resume_at)}</p>}
           <h3>职位描述</h3><p className="description">
             {selectedJob.data.description || "尚未读取详情"}</p>
         </aside>
@@ -388,6 +467,201 @@ function App() {
 function Empty({ text }: { text: string }) {
   return <div className="empty"><BriefcaseBusiness size={28} /><p>{text}</p></div>;
 }
+function Pager({ page, pages, total, onPage }: {
+  page: number; pages: number; total: number; onPage: (page: number) => void;
+}) {
+  if (total <= PAGE_SIZE) return null;
+  return <div className="pager">
+    <span>共 {total} 条</span>
+    <button className="secondary" disabled={page <= 1} onClick={() => onPage(page - 1)}>上一页</button>
+    <span>{page} / {pages}</span>
+    <button className="secondary" disabled={page >= pages} onClick={() => onPage(page + 1)}>下一页</button>
+  </div>;
+}
+function ResumeChart({ jobs, commands, dim, onDim }: {
+  jobs: Job[]; commands: Cmd[]; dim: ChartDim; onDim: (dim: ChartDim) => void;
+}) {
+  const [style, setStyle] = useState<ChartStyle>("bar");
+  const rows = chartRows(jobs, commands, dim);
+  const max = Math.max(1, ...rows.map((row) => row.total));
+  return <section className="panel chart-panel">
+    <div className="panel-title">
+      <h2>简历发送统计</h2>
+      <div className="segment" role="tablist" aria-label="统计维度">
+        {chartDims.map((item) => <button key={item.id} role="tab"
+          aria-selected={dim === item.id} className={dim === item.id ? "active" : ""}
+          onClick={() => onDim(item.id)}>{item.label}</button>)}
+      </div>
+    </div>
+    <p className="prose">统计扩展已成功完成的发送，包括沟通点击成功和简历发送成功。可按日期、公司、城市、简历名称和结果查看，并切换条形、柱状、曲线和面积。日期按北京时间。</p>
+    {!jobs.length ? <Empty text="尚无扩展发送成功的记录。" /> : <>
+      <div className="segment chart-styles" role="tablist" aria-label="图表样式">
+        {chartStyles.map((item) => <button key={item.id} role="tab"
+          aria-selected={style === item.id} className={style === item.id ? "active" : ""}
+          onClick={() => setStyle(item.id)}>{item.label}</button>)}
+      </div>
+      {style === "bar" ? <div className="chart">
+        {rows.map((row) => <div className="chart-row" key={row.label}>
+          <span className="chart-label" title={row.label}>{row.label}</span>
+          <div className="chart-track" role="img" aria-label={`${row.label} ${row.total}`}>
+            {chartSources.map((source) => row.counts[source] ? (
+              <span key={source} className={"chart-part " + source}
+                style={{ width: `${(row.counts[source] / max) * 100}%` }} />
+            ) : null)}
+          </div>
+          <strong>{row.total}</strong>
+        </div>)}
+      </div> : <TrendChart rows={rows} style={style} />}
+      <div className="chart-legend">
+        <span><i className="boss" />BOSS 直聘</span>
+        <span><i className="liepin" />猎聘</span>
+        <span><i className="fixture" />本地样本</span>
+      </div>
+    </>}
+  </section>;
+}
+function smoothLine(points: { x: number; y: number }[]) {
+  // 相邻点的中点作控制点，把折线收成曲线。
+  if (!points.length) return "";
+  let path = `M ${points[0].x} ${points[0].y}`;
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const current = points[index];
+    const next = points[index + 1];
+    const mid = (current.x + next.x) / 2;
+    path += ` C ${mid} ${current.y}, ${mid} ${next.y}, ${next.x} ${next.y}`;
+  }
+  return path;
+}
+function TrendChart({ rows, style }: { rows: ChartRow[]; style: Exclude<ChartStyle, "bar"> }) {
+  const width = 640;
+  const height = 240;
+  const pad = { left: 36, right: 12, top: 16, bottom: 46 };
+  const innerW = width - pad.left - pad.right;
+  const innerH = height - pad.top - pad.bottom;
+  const peak = Math.max(1, ...rows.map((row) =>
+    style === "line" ? Math.max(...chartSources.map((source) => row.counts[source])) : row.total));
+  const slot = innerW / Math.max(rows.length, 1);
+  const xAt = (index: number) => pad.left + slot * index + slot / 2;
+  const yAt = (value: number) => pad.top + innerH - (value / peak) * innerH;
+  const ticks = [...new Set([0, Math.round(peak / 2), peak])];
+  const summary = rows.map((row) => `${row.label} ${row.total}`).join("，");
+  return <svg className="chart-svg" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={summary}>
+    {ticks.map((tick) => <g key={tick}>
+      <line className="grid" x1={pad.left} x2={width - pad.right} y1={yAt(tick)} y2={yAt(tick)} />
+      <text x={pad.left - 6} y={yAt(tick) + 3} textAnchor="end">{tick}</text>
+    </g>)}
+    {style === "column" && rows.map((row, index) => {
+      const barW = Math.max(8, Math.min(32, slot * 0.62));
+      let cursor = yAt(0);
+      return chartSources.map((source) => {
+        const barH = (row.counts[source] / peak) * innerH;
+        cursor -= barH;
+        return barH > 0 ? <rect key={source} className={source}
+          x={xAt(index) - barW / 2} y={cursor} width={barW} height={barH} rx={2}>
+          <title>{`${row.label} ${platforms[source]} ${row.counts[source]}`}</title>
+        </rect> : null;
+      });
+    })}
+    {style === "line" && chartSources.map((source, sourceIndex) => {
+      // 同一天两个平台数量接近时错开，避免后画的线把前一条完全盖住。
+      const shift = (sourceIndex - (chartSources.length - 1) / 2) * 7;
+      const points = rows.map((row, index) => ({
+        x: xAt(index) + shift,
+        y: yAt(row.counts[source]),
+      }));
+      if (points.every((point) => point.y === yAt(0))) return null;
+      return <g key={source} className={source}>
+        {points.length > 1 && <path className="line" d={smoothLine(points)} />}
+        {points.map((point, index) => <circle key={rows[index].label} cx={point.x} cy={point.y} r={3.5}>
+          <title>{`${rows[index].label} ${platforms[source]} ${rows[index].counts[source]}`}</title>
+        </circle>)}
+      </g>;
+    })}
+    {style === "area" && rows.length < 2 && rows.map((row, index) => {
+      const barW = 36;
+      let cursor = yAt(0);
+      return chartSources.map((source) => {
+        const barH = (row.counts[source] / peak) * innerH;
+        cursor -= barH;
+        return barH > 0 ? <rect key={source} className={"area " + source}
+          x={xAt(index) - barW / 2} y={cursor} width={barW} height={barH} rx={2}>
+          <title>{`${row.label} ${platforms[source]} ${row.counts[source]}`}</title>
+        </rect> : null;
+      });
+    })}
+    {style === "area" && rows.length >= 2 && chartSources.map((source, sourceIndex) => {
+      const lower = rows.map((row, index) => {
+        const base = chartSources.slice(0, sourceIndex)
+          .reduce((sum, name) => sum + row.counts[name], 0);
+        return { x: xAt(index), y: yAt(base) };
+      });
+      const upper = rows.map((row, index) => {
+        const value = chartSources.slice(0, sourceIndex + 1)
+          .reduce((sum, name) => sum + row.counts[name], 0);
+        return { x: xAt(index), y: yAt(value) };
+      });
+      if (upper.every((point, index) => point.y === lower[index].y)) return null;
+      const forward = smoothLine(upper);
+      const back = smoothLine([...lower].reverse()).replace(/^M/, "L");
+      return <path key={source} className={"area " + source} d={`${forward} ${back} Z`}>
+        <title>{platforms[source]}</title>
+      </path>;
+    })}
+    {rows.map((row, index) => <text key={row.label} x={xAt(index)} y={height - 16} textAnchor="middle">
+      <title>{row.label}</title>
+      {row.label.length > 6 ? row.label.slice(0, 6) : row.label}
+    </text>)}
+  </svg>;
+}
+function successTimes(commands: Cmd[]) {
+  const times = new Map<string, number>();
+  for (const command of commands) {
+    if (command.status !== "SUCCEEDED") continue;
+    if (command.action !== "CONTACT" && command.action !== "RESUME_SEND") continue;
+    const recorded = command.result?.click_recorded_at;
+    const stamp = typeof recorded === "number" && recorded > 0 ? recorded : command.issued_at;
+    const id = `${command.scope}\0${command.job_key}`;
+    times.set(id, Math.max(times.get(id) ?? 0, stamp));
+  }
+  return times;
+}
+function chartRows(jobs: Job[], commands: Cmd[], dim: ChartDim) {
+  const blank = (): Record<Source, number> => ({ boss: 0, liepin: 0, fixture: 0 });
+  const grouped = new Map<string, Record<Source, number>>();
+  const stamps = successTimes(commands);
+  const add = (label: string, source: Source) => {
+    const row = grouped.get(label) ?? blank();
+    row[source] += 1;
+    grouped.set(label, row);
+  };
+  if (dim === "day") {
+    const days = recentDays();
+    for (const day of days) grouped.set(day, blank());
+    for (const job of jobs) {
+      const stamp = job.resume_at || stamps.get(`${job.scope}\0${job.key}`) || 0;
+      if (!stamp) continue;
+      const day = shanghaiDay(stamp);
+      if (grouped.has(day)) add(day, job.source);
+    }
+    return days.map((day) => {
+      const counts = grouped.get(day) ?? blank();
+      return { label: day.slice(5), counts, total: counts.boss + counts.liepin + counts.fixture };
+    });
+  }
+  for (const job of jobs) {
+    const label = dim === "company" ? (job.data.company || "未填写公司")
+      : dim === "city" ? (job.data.city || "未填写城市")
+      : dim === "resume" ? (job.resume_name || "沟通点击")
+      : "发送成功";
+    add(label, job.source);
+  }
+  return [...grouped.entries()]
+    .map(([label, counts]) => ({
+      label, counts, total: counts.boss + counts.liepin + counts.fixture,
+    }))
+    .sort((left, right) => right.total - left.total)
+    .slice(0, 12);
+}
 function Jobs({ jobs, onSelect }: { jobs: Job[]; onSelect: (job: Job) => void }) {
   return jobs.length ? <div className="table-scroll"><table>
     <thead><tr><th>平台</th><th>岗位 / 企业</th><th>地点</th>
@@ -397,7 +671,9 @@ function Jobs({ jobs, onSelect }: { jobs: Job[]; onSelect: (job: Job) => void })
       <td><button className="job-link" onClick={() => onSelect(job)}>
         {job.data.title}</button><small>{job.data.company || "企业名称待读取"}</small></td>
       <td>{job.data.city || "待读取"}</td><td>{status(job.decision)}</td>
-      <td>{status(job.contact)}</td><td>{status(job.resume)}</td>
+      <td>{status(job.contact)}</td><td>{status(job.resume)}
+        {job.resume_name && <small>{job.resume_name}</small>}
+        {!!job.resume_at && <small>{dateTime(job.resume_at)}</small>}</td>
     </tr>)}</tbody>
   </table></div> : <Empty text="暂无岗位记录。请在招聘平台页面使用扩展读取岗位。" />;
 }

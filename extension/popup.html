@@ -108,6 +108,11 @@
       #page {
         font-weight: 600;
       }
+      #delivered {
+        font-weight: 700;
+        font-size: 16px;
+        margin-bottom: 4px;
+      }
       #counts {
         font-weight: 600;
         font-size: 14px;
@@ -164,14 +169,20 @@
       <p id="capability" class="muted"></p>
       <p id="chat-probe" class="muted"></p>
       <button id="chat-baseline" class="full" hidden>记录当前会话消息基线（只读）</button>
-      <button id="broad" class="full" hidden>打开配置的 BOSS 北京搜索页</button>
-      <button id="open-liepin" class="full">打开配置的猎聘北京搜索页</button>
     </section>
     <details id="automation-settings">
       <summary>搜索入口与点击间隔</summary>
-      <p class="muted">仅支持北京职位搜索页；可修改搜索关键词。运行中须先暂停或停止，已领取动作结束后再保存。</p>
+      <p class="muted">仅支持北京职位搜索页；职位标题可从下拉选择预设，也可手工输入任意标题，都会同步改写下方两站 URL。也可继续手改 URL。保存后用对应按钮打开当前配置的搜索页。运行中须先暂停或停止，已领取动作结束后再保存。</p>
+      <label>职位标题（下拉预设）
+        <select id="job-title-select"></select>
+      </label>
+      <label>职位标题（手工输入）
+        <input id="job-title" type="text" spellcheck="false" autocomplete="off" placeholder="输入任意职位标题" />
+      </label>
       <label>BOSS 搜索 URL<input id="boss-search-url" type="url" spellcheck="false" /></label>
+      <button id="broad" class="full">打开配置的 BOSS 北京搜索页</button>
       <label>猎聘搜索 URL<input id="liepin-search-url" type="url" spellcheck="false" /></label>
+      <button id="open-liepin" class="full">打开配置的猎聘北京搜索页</button>
       <label>两次沟通点击的最短间隔（秒）
         <input id="contact-interval" type="number" min="5" max="120" step="1" value="5" />
       </label>
@@ -217,6 +228,7 @@
       <p class="muted">20 个 / 30 分钟为可调整工程预算。</p>
     </section>
     <section>
+      <p id="delivered" hidden></p>
       <p id="progress"></p>
       <p id="counts"></p>
       <p id="pending" class="muted"></p>

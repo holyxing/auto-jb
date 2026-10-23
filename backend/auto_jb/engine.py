@@ -174,6 +174,36 @@ def complete(run, reason):
     run.lease_until = 0
 
 
+def skip_active_job(db, run, cfg, key, reason):
+    """岗位左右不一致或选岗失败时跳过，不暂停整轮。"""
+    job = job_for(db, run, key) if key else None
+    if job and job.contact == "NOT_STARTED":
+        job.reason = reason
+    done = list(cfg.get("done", []))
+    if key and key not in done:
+        done.append(key)
+    cfg.update(active_key="", done=done)
+    run.settings = cfg
+
+
+def detail_matches_card(snap, key):
+    detail = snap.get("detail")
+    if not detail or detail.get("key") != key or snap.get("selected_key") != key:
+        return False, "左右岗位身份未同步，已跳过"
+    card = next((item for item in snap.get("cards") or [] if item.get("key") == key), None)
+    if not card:
+        return False, "列表中已找不到该岗位，已跳过"
+    if card.get("title") != detail.get("title") or card.get("company") != detail.get("company"):
+        return False, "左右岗位标题或公司不一致，已跳过"
+    detail_city = detail.get("city") or ""
+    card_city = card.get("city") or ""
+    if detail_city and card_city != detail_city and not (
+        detail_city == "北京" and card_city.startswith("北京·")
+    ):
+        return False, "左右岗位地点不一致，已跳过"
+    return True, ""
+
+
 def plan(db, connection, snap):
     run = db.scalar(
         select(Run).where(Run.connection_id == connection.id, Run.status.in_(ACTIVE)).with_for_update()
@@ -221,6 +251,9 @@ def plan(db, connection, snap):
         if chat["resume"] == "SENT" or resume_in_conversation(db, run, chat["conversation"]):
             if job.resume != "SENT":
                 job.resume = "ALREADY_SENT"
+            if chat.get("resume_name") and not job.resume_name:
+                job.resume_name = chat["resume_name"]
+                job.resume_at = float(chat.get("resume_at") or job.resume_at or 0)
         elif chat["resume"] in ["WAITING_PEER", "UNAVAILABLE"]:
             job.resume = chat["resume"]
         elif cfg.get("send_resume") and chat["resume"] == "READY" and job.resume in ["NOT_CHECKED", "READY"]:
@@ -234,15 +267,29 @@ def plan(db, connection, snap):
         return {"command": emit(db, run, snap, "RESTORE", active_key), "status": run.status}
     detail = snap.get("detail")
     if active_key:
-        if not detail or detail["key"] != active_key or snap["selected_key"] != active_key:
-            pause(db, run, "左右岗位身份未同步，请核对页面")
-            return {"command": None, "status": run.status}
+        matched, skip_reason = detail_matches_card(snap, active_key)
+        if not matched:
+            skip_active_job(db, run, cfg, active_key, skip_reason)
+            active_key = ""
+            detail = None
+        else:
+            detail = snap.get("detail")
+    if active_key:
         job = job_for(db, run, active_key)
         fingerprint = digest(detail)
         if job.fingerprint != fingerprint or job.policy != POLICY or job.decision == "PENDING":
             result = classify(detail)
             job.data, job.fingerprint, job.policy = detail, fingerprint, POLICY
             job.decision, job.reason, job.evidence = result["decision"], result["reason"], result["evidence"]
+        # 自动点击批次：搜索页已按关键词筛过，北京岗位大致可投，不再因待复核卡住。
+        if site_auto and job.contact == "NOT_STARTED":
+            city = (detail.get("city") or (job.data or {}).get("city") or "").strip()
+            if city and not city.startswith("北京"):
+                job.decision = "EXCLUDE"
+                job.reason = "实际工作地点不在北京"
+            elif job.decision != "INCLUDE":
+                job.decision = "INCLUDE"
+                job.reason = "搜索结果岗位，本轮直接投递"
         if job.contact == "NOT_STARTED" and active_key in prior_contacts:
             job.contact = prior_contacts[active_key]
         actionable_site = (job.contact == "NOT_STARTED" and active_key not in prior_contacts
@@ -257,15 +304,16 @@ def plan(db, connection, snap):
             elif detail["contact_button"] == "READY":
                 return {"command": emit(db, run, snap, "CONTACT", active_key), "status": run.status}
             elif snap["source"] == "liepin" and detail["contact_button"] in {"MISSING", "DISABLED"}:
-                pause(db, run, "猎聘聊一聊按钮未显示或不可用，请核对当前岗位")
-                return {"command": None, "status": run.status}
+                skip_active_job(db, run, cfg, active_key, "猎聘聊一聊不可用，已跳过")
+                active_key = ""
             else:
                 job.reason = "沟通按钮不可用，未执行外部操作"
-        done = list(cfg.get("done", []))
-        if active_key not in done:
-            done.append(active_key)
-        cfg.update(active_key="", done=done)
-        run.settings = cfg
+        if active_key:
+            done = list(cfg.get("done", []))
+            if active_key not in done:
+                done.append(active_key)
+            cfg.update(active_key="", done=done)
+            run.settings = cfg
     if run.mode == "verify" and cfg.get("pinned_key") in cfg.get("done", []):
         complete(run, "VERIFICATION_FINISHED")
         return {"command": None, "status": run.status}
@@ -343,6 +391,7 @@ def claim(db, command_id, connection, snap):
             "CONTACT_INITIATED",
             "ALREADY_CONTACTED",
             "CLICKED",
+            "CLOSED",
         ]:
             raise HTTPException(409, "重复或未决外部动作")
         if site_click and cmd.job_key in site_contact_history(db, run.scope):
@@ -423,18 +472,51 @@ def finish(db, cmd, connection, result):
                 cfg["done"] = list(dict.fromkeys([*cfg.get("done", []), cmd.job_key]))
                 cfg["active_key"] = ""
                 run.settings = cfg
+            elif (
+                snap["source"] == "liepin"
+                and ok
+                and not result.get("click_dispatched")
+                and (snap.get("detail") or {}).get("contact_button") == "MISSING"
+            ):
+                # 明细页显示职位已暂停或已下线，没有聊一聊。跳过该岗，不暂停本轮。
+                job.contact = "CLOSED"
+                job.reason = "职位已暂停招聘或已下线，未点击"
+                cmd.status = "SUCCEEDED"
+                cfg = dict(run.settings)
+                cfg["done"] = list(dict.fromkeys([*cfg.get("done", []), cmd.job_key]))
+                cfg["active_key"] = ""
+                run.settings = cfg
             elif snap["source"] == "liepin" and result.get("click_dispatched"):
                 job.contact = "UNKNOWN"
                 cmd.status = "UNKNOWN"
-                pause(db, run, "猎聘真实点击后未观察到会话或已沟通状态；已暂停，禁止自动重试")
+                cfg = dict(run.settings)
+                cfg["done"] = list(dict.fromkeys([*cfg.get("done", []), cmd.job_key]))
+                cfg["active_key"] = ""
+                run.settings = cfg
+                # 自动批次该岗不重试并继续；验证任务仍暂停供人工核对。
+                if run.mode != "auto":
+                    pause(db, run, "猎聘真实点击后未观察到会话或已沟通状态；已暂停，禁止自动重试")
             elif snap["source"] == "liepin" and result["outcome"] == "NO_EFFECT":
-                job.contact = "NOT_STARTED"
+                job.contact = "CLOSED" if run.mode == "auto" else "NOT_STARTED"
                 cmd.status = "FAILED"
-                pause(db, run, result.get("note") or "猎聘点击前检查失败，尚未联系该岗位")
+                if run.mode == "auto":
+                    job.reason = result.get("note") or "猎聘点击前检查失败，已跳过"
+                    cfg = dict(run.settings)
+                    cfg["done"] = list(dict.fromkeys([*cfg.get("done", []), cmd.job_key]))
+                    cfg["active_key"] = ""
+                    run.settings = cfg
+                else:
+                    pause(db, run, result.get("note") or "猎聘点击前检查失败，尚未联系该岗位")
             else:
                 job.contact = "UNKNOWN"
                 cmd.status = "UNKNOWN"
-                pause(db, run, "无法确认是否点击；该岗位禁止自动重试，请人工核对")
+                if run.mode == "auto" and snap["source"] in CLICK_SOURCES:
+                    cfg = dict(run.settings)
+                    cfg["done"] = list(dict.fromkeys([*cfg.get("done", []), cmd.job_key]))
+                    cfg["active_key"] = ""
+                    run.settings = cfg
+                else:
+                    pause(db, run, "无法确认是否点击；该岗位禁止自动重试，请人工核对")
             return
         chat = snap.get("chat")
         match = bool(chat and chat["key"] == cmd.job_key and chat["conversation"] and chat["evidence"])
@@ -461,6 +543,10 @@ def finish(db, cmd, connection, result):
                 and chat["conversation"] == (cmd.binding.get("chat") or {}).get("conversation")
             )
             job.resume = "SENT" if success else "UNKNOWN"
+            # 无论成功或结果未知，都记下当时的简历文件，供工作台完整展示。
+            job.resume_name = (chat or {}).get("resume_name") or run.settings.get("resume_name") or job.resume_name
+            recorded_at = (chat or {}).get("resume_at") or 0
+            job.resume_at = float(recorded_at or job.resume_at or time.time())
         if success:
             cmd.status = "SUCCEEDED"
             if run.mode == "verify" and not cap(db, run, cmd.action):
@@ -478,12 +564,14 @@ def finish(db, cmd, connection, result):
             pause(db, run, "外部动作缺少成功证据；需只读核验，不能重新发送")
     elif ok:
         cmd.status = "SUCCEEDED"
-        if cmd.action == "SELECT" and (
-            not snap.get("detail")
-            or snap["detail"]["key"] != cmd.job_key
-            or snap["selected_key"] != cmd.job_key
-        ):
-            pause(db, run, "选择后右侧详情未同步")
+        if cmd.action == "SELECT":
+            matched, skip_reason = detail_matches_card(snap, cmd.job_key)
+            if not matched:
+                cfg = dict(run.settings)
+                if snap["source"] in CLICK_SOURCES and run.mode == "auto":
+                    skip_active_job(db, run, cfg, cmd.job_key, skip_reason)
+                else:
+                    pause(db, run, "选择后右侧详情未同步")
         if cmd.action == "SCROLL":
             cfg = dict(run.settings)
             cfg["no_progress"] = (
@@ -499,6 +587,13 @@ def finish(db, cmd, connection, result):
             run.settings = cfg
     else:
         cmd.status = "FAILED"
+        if cmd.action == "SELECT" and snap["source"] in CLICK_SOURCES and run.mode == "auto":
+            cfg = dict(run.settings)
+            skip_active_job(
+                db, run, cfg, cmd.job_key,
+                result.get("note") or "选岗失败，已跳过",
+            )
+            return
         if cmd.action == "SELECT":
             cfg = dict(run.settings)
             if cfg.get("active_key") == cmd.job_key:

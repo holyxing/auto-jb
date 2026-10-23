@@ -60,3 +60,7 @@ npm run test:e2e
 ```
 
 The E2E suite requires the local Compose stack and fixture. It uses an isolated temporary Chromium profile; it does not operate your personal Chrome profile or either recruitment site. The backend currently creates an initial database schema without a production migration path. Do not deploy this version as a shared, public multi-user service.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).

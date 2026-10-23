@@ -5,10 +5,149 @@ import { isConfiguredLiepinJobsUrl } from "./liepinJobsUrl";
 import { parseSearchSettings } from "./searchSettings";
 import { apiError } from "./httpError";
 const API = "http://127.0.0.1:17830";
+// 每次 service worker 启动换一个代号。旧页面脚本拿不到它，不能再假装已连上。
+const runtimeBoot = crypto.randomUUID();
+async function attachOpenJobPages() {
+  const tabs = await chrome.tabs.query({
+    url: [
+      "https://www.liepin.com/zhaopin/*",
+      "https://www.zhipin.com/web/geek/jobs*",
+      "http://127.0.0.1:17830/fixture*",
+    ],
+  });
+  await Promise.all(tabs.map(async (tab) => {
+    if (!tab.id) return;
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ["content.js"],
+      });
+    } catch {
+      // 弹窗打开时会再试，并把失败原因显示出来。
+    }
+  }));
+}
+void chrome.storage.session.setAccessLevel({
+  accessLevel: "TRUSTED_AND_UNTRUSTED_CONTEXTS",
+}).catch(() => undefined).then(() => attachOpenJobPages());
 async function searchSettings() {
   const stored = await chrome.storage.local.get("searchSettings");
   return parseSearchSettings(stored.searchSettings);
 }
+let recoveringSiteRun = false;
+let lastSiteRecoverAt = 0;
+function recoverableSiteReason(reason: string) {
+  // 用户点“暂停”不自动恢复；招聘页关掉或切走时自动拉回搜索页。
+  if (!reason || reason === "用户暂停") return false;
+  return /用户操作页面或扩展重新启动|不在前台|浏览器连接中断|北京搜索入口|已配置的猎聘北京搜索页|页面无法识别|招聘页已断开/
+    .test(reason);
+}
+async function ensureSiteSearchTab(source: "boss" | "liepin") {
+  const search = await searchSettings();
+  const targetUrl = source === "liepin" ? search.liepinUrl : search.bossUrl;
+  const tabs = await chrome.tabs.query({});
+  const existing = tabs.find((tab) => {
+    const url = tab.url ?? "";
+    return source === "liepin"
+      ? url.startsWith("https://www.liepin.com/zhaopin/")
+      : url.startsWith("https://www.zhipin.com/web/geek/jobs");
+  });
+  await chrome.storage.session.set({ siteRunRecover: { at: Date.now() } });
+  if (existing?.id) {
+    const configured = source === "liepin"
+      ? isConfiguredLiepinJobsUrl(existing.url ?? "", search.liepinUrl)
+      : isConfiguredBossJobsUrl(existing.url ?? "", search.bossUrl);
+    if (!configured)
+      await chrome.tabs.update(existing.id, { url: targetUrl, active: true });
+    else
+      await chrome.tabs.update(existing.id, { active: true });
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: existing.id },
+        files: ["content.js"],
+      });
+    } catch {
+      // 页面连上后弹窗或下次恢复会再挂。
+    }
+    return existing.id;
+  }
+  const created = await chrome.tabs.create({ url: targetUrl, active: true });
+  return created.id ?? 0;
+}
+async function recoverSiteRun() {
+  if (recoveringSiteRun || Date.now() - lastSiteRecoverAt < 5000) return { recovered: false };
+  const stored = await chrome.storage.local.get("deviceToken");
+  if (!stored.deviceToken) return { recovered: false };
+  let state: {
+    runs: {
+      id: string; mode: string; status: string; reason: string; scope: string;
+      profile: string; deadline: number;
+    }[];
+    connections: {
+      tab: number; seen_at: number; blocked: string; source: string;
+      account: string; profile: string;
+    }[];
+  };
+  try {
+    state = await request("/api/device/state", undefined, stored.deviceToken);
+  } catch {
+    return { recovered: false };
+  }
+  const now = Date.now() / 1000;
+  const run = state.runs.find((item) =>
+    item.mode === "auto" &&
+    ["WAITING_HUMAN", "PAUSED_USER"].includes(item.status) &&
+    item.deadline > now &&
+    recoverableSiteReason(item.reason) &&
+    (item.scope.startsWith("boss:") || item.scope.startsWith("liepin:")),
+  );
+  if (!run) return { recovered: false };
+  recoveringSiteRun = true;
+  lastSiteRecoverAt = Date.now();
+  try {
+    const source = run.scope.startsWith("liepin:") ? "liepin" : "boss";
+    const tabId = await ensureSiteSearchTab(source);
+    if (!tabId) return { recovered: false };
+    for (let attempt = 0; attempt < 20; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      state = await request("/api/device/state", undefined, stored.deviceToken);
+      const fresh = state.runs.find((item) => item.id === run.id);
+      if (!fresh || !["WAITING_HUMAN", "PAUSED_USER"].includes(fresh.status))
+        return { recovered: true };
+      const seen = Date.now() / 1000;
+      const conn = state.connections.find((item) =>
+        item.tab === tabId &&
+        seen - item.seen_at < 20 &&
+        !item.blocked &&
+        `${item.source}:${item.account}` === run.scope &&
+        item.profile === run.profile,
+      );
+      if (conn) {
+        await request(
+          `/api/device/runs/${run.id}/control`,
+          { action: "resume" },
+          stored.deviceToken,
+        );
+        return { recovered: true };
+      }
+    }
+    return { recovered: false };
+  } catch {
+    return { recovered: false };
+  } finally {
+    recoveringSiteRun = false;
+  }
+}
+chrome.tabs.onActivated.addListener(() => {
+  void recoverSiteRun();
+});
+chrome.tabs.onRemoved.addListener(() => {
+  void recoverSiteRun();
+});
+void chrome.alarms.create("recoverSiteRun", { periodInMinutes: 1 });
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === "recoverSiteRun") void recoverSiteRun();
+});
 function fromPage(sender: chrome.runtime.MessageSender) {
   if (!sender.tab?.id || !sender.url) return false;
   const u = new URL(sender.url);
@@ -82,16 +221,19 @@ const liepinDetailButton = `(() => {
   const panel = [...document.querySelectorAll("div,span,p,h2,h3")].some((element) =>
     visible(element) && element.textContent && element.textContent.trim() === "我的沟通" &&
     ![...element.children].some((child) => child.textContent && child.textContent.trim() === "我的沟通"));
+  const closedLabels = ["该职位已暂停招聘", "职位已暂停招聘", "已下线"];
+  const closed = [...document.querySelectorAll("h1,h2,h3,div,span,p")].some((element) =>
+    visible(element) && closedLabels.includes(element.textContent ? element.textContent.trim() : ""));
   const pick = options[0] || null;
-  return { text: pick ? pick.text : "", x: pick ? pick.x : 0, y: pick ? pick.y : 0, panel };
+  return { text: pick ? pick.text : "", x: pick ? pick.x : 0, y: pick ? pick.y : 0, panel, closed };
 })()`;
 
 async function readLiepinDetailButton(tabId: number) {
   const raw = await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
     expression: liepinDetailButton,
     returnByValue: true,
-  }) as { result?: { value?: { text: string; x: number; y: number; panel: boolean } } };
-  return raw.result?.value ?? { text: "", x: 0, y: 0, panel: false };
+  }) as { result?: { value?: { text: string; x: number; y: number; panel: boolean; closed?: boolean } } };
+  return raw.result?.value ?? { text: "", x: 0, y: 0, panel: false, closed: false };
 }
 
 async function pointerClick(tabId: number, pointAt: () => Promise<{ x: number; y: number }>) {
@@ -154,7 +296,10 @@ async function clickLiepinDetailChat(tabId: number) {
       button = await readLiepinDetailButton(tabId);
     }
     if (button.text === "继续聊" || button.text === "已沟通")
-      return { clicked: false, effect: false, already: true };
+      return { clicked: false, effect: false, already: true, unavailable: false };
+    // 职位已暂停或已下线时没有聊一聊，关掉明细后继续下一岗。
+    if (button.closed && button.text !== "聊一聊")
+      return { clicked: false, effect: false, already: false, unavailable: true };
     if (button.text !== "聊一聊") throw new Error("明细页右上角没有聊一聊");
     point = await readLiepinDetailButton(tabId);
     if (point.text !== "聊一聊") throw new Error("明细页聊一聊按钮状态变化");
@@ -181,7 +326,7 @@ async function clickLiepinDetailChat(tabId: number) {
       }
       await new Promise((resolve) => setTimeout(resolve, 150));
     }
-    return { clicked: true, effect, already: false };
+    return { clicked: true, effect, already: false, unavailable: false };
   } finally {
     if (pressed) await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
       type: "mouseReleased", x: point.x, y: point.y, button: "left", buttons: 0, clickCount: 1,
@@ -227,6 +372,27 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         },
       });
       return { captured: true };
+    }
+    if (message.type === "boot" && popup) return { boot: runtimeBoot };
+    if (message.type === "recoverSiteRun") {
+      // 弹窗或页面脚本都可触发；招聘页丢失时自动拉回搜索页并恢复。
+      return recoverSiteRun();
+    }
+    if (message.type === "attach" && popup) {
+      if (!Number.isInteger(message.tabId) || message.tabId <= 0)
+        throw new Error("没有可连接的标签页");
+      const tab = await chrome.tabs.get(message.tabId);
+      const url = tab.url ?? "";
+      const jobPage = url.startsWith("https://www.liepin.com/zhaopin/") ||
+        url.startsWith("https://www.zhipin.com/web/geek/jobs") ||
+        url.startsWith("http://127.0.0.1:17830/fixture");
+      if (!jobPage) throw new Error("当前标签页不是招聘职位页");
+      // 扩展重载后，已打开的猎聘页不会自动重新注入内容脚本。
+      await chrome.scripting.executeScript({
+        target: { tabId: message.tabId },
+        files: ["content.js"],
+      });
+      return { attached: true };
     }
     if (message.type === "panel" && popup) {
       const stored = await chrome.storage.local.get("deviceToken");
@@ -285,6 +451,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       let clicked = false;
       let effect = false;
       let already = false;
+      let unavailable = false;
       let closed = false;
       try {
         await chrome.tabs.update(detailId, { active: true });
@@ -292,11 +459,12 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         clicked = outcome.clicked;
         effect = outcome.effect;
         already = outcome.already;
+        unavailable = outcome.unavailable;
       } finally {
         await chrome.tabs.remove(detailId).then(() => { closed = true; }).catch(() => {});
         await chrome.tabs.update(searchId, { active: true }).catch(() => {});
       }
-      return { clicked, effect, already, closed };
+      return { clicked, effect, already, unavailable, closed };
     }
     if (message.type === "chatProbe") {
       if (new URL(sender.url!).pathname !== "/web/geek/chat")
@@ -352,6 +520,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       }
       return {
         paired: !!stored.deviceToken,
+        boot: runtimeBoot,
         profile: stored.bossProfile ?? null,
         searchSettings: await searchSettings(),
       };

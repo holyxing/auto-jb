@@ -2,7 +2,7 @@ import os
 import time
 import uuid
 
-from sqlalchemy import JSON, Float, Index, Integer, String, UniqueConstraint, create_engine, text
+from sqlalchemy import JSON, Float, Index, Integer, String, UniqueConstraint, create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -82,6 +82,9 @@ class Job(Base):
     fingerprint: Mapped[str] = mapped_column(String, default="")
     contact: Mapped[str] = mapped_column(String, default="NOT_STARTED")
     resume: Mapped[str] = mapped_column(String, default="NOT_CHECKED")
+    # 简历文件名和发送时间随岗位保存，避免只留在命令快照里被列表截断。
+    resume_name: Mapped[str] = mapped_column(String, default="")
+    resume_at: Mapped[float] = mapped_column(Float, default=0)
     run_id: Mapped[str] = mapped_column(String, default="")
     created_at: Mapped[float] = mapped_column(Float, default=time.time)
     __table_args__ = (UniqueConstraint("scope", "key"),)
@@ -120,4 +123,15 @@ def database(url=None):
         **({"connect_args": {"check_same_thread": False}} if url.startswith("sqlite") else {}),
     )
     Base.metadata.create_all(engine)
+    # 已有数据库不会因模型新增字段而自动变更，这里补上简历记录列。
+    names = {column["name"] for column in inspect(engine).get_columns("jobs")}
+    statements = []
+    if "resume_name" not in names:
+        statements.append("ALTER TABLE jobs ADD COLUMN resume_name VARCHAR DEFAULT ''")
+    if "resume_at" not in names:
+        statements.append("ALTER TABLE jobs ADD COLUMN resume_at FLOAT DEFAULT 0")
+    if statements:
+        with engine.begin() as conn:
+            for statement in statements:
+                conn.execute(text(statement))
     return engine, sessionmaker(engine, expire_on_commit=False)

@@ -19,6 +19,8 @@ docker compose up -d --build --wait
 
 访问 http://127.0.0.1:17830 。在本机 `.env` 查看 `AUTOJB_ADMIN_TOKEN`，输入登录界面。初始化脚本生成随机凭证并限制文件权限，不打印令牌。不要提交、截图或分享 `.env`。
 
+也可以用 `scripts/auto-jb.sh start`、`restart` 或 `stop`。`stop` 只暂停容器，不删除数据库卷。
+
 扩展连接地址固定为 `127.0.0.1:17830`；不要单独修改 `AUTOJB_PORT`。PostgreSQL 仅在 Compose 网络内提供服务，不映射宿主端口。`docker compose stop` 暂停本项目，`docker compose up -d --wait` 重新启动；不要删除数据库卷，删除账本会失去历史去重依据。
 
 ## 连接扩展与验证本地流程
@@ -91,3 +93,7 @@ E2E 需要本项目 Docker 服务在线及本地 fixture 启用。测试用独�
 - `backend/tests/`、`tests/unit/`、`tests/e2e/`：单元与集成验证。
 
 数据库目前采用首版建表，没有生产升级迁移机制。不要将此初版直接用于多人共享或公网部署。详细聊天内容没有全量采集，运行状态与必要岗位证据存储在本机数据库；截图按需生成，自动清理界面尚未实现。
+
+## 开源许可
+
+本项目采用 [MIT License](LICENSE)。

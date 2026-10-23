@@ -30,3 +30,11 @@ export function isConfiguredBossJobsUrl(value: string | URL, configured = BOSS_J
     return valid(url) && url.searchParams.get("query") === expected.searchParams.get("query");
   } catch { return false; }
 }
+
+export function bossJobsUrlWithTitle(title: string, base = BOSS_JOBS_URL): string {
+  const keyword = title.trim();
+  if (!keyword) throw new Error("职位标题不能为空");
+  const url = new URL(parseBossJobsUrl(base));
+  url.searchParams.set("query", keyword);
+  return parseBossJobsUrl(url.href);
+}

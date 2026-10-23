@@ -856,3 +856,102 @@ summary {
   flex-shrink: 0;
   white-space: nowrap;
 }
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 14px;
+  color: #80909c;
+  font-size: 12px;
+}
+.pager .secondary {
+  padding: 6px 10px;
+}
+.chart-panel {
+  margin-bottom: 22px;
+}
+.segment {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.segment button {
+  border: 1px solid #d7e0e6;
+  background: #fff;
+  color: #52616b;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.segment button.active {
+  background: #17686e;
+  border-color: #17686e;
+  color: #fff;
+}
+.chart {
+  display: grid;
+  gap: 10px;
+}
+.chart-row {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr) 28px;
+  gap: 10px;
+  align-items: center;
+  font-size: 12px;
+}
+.chart-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #52616b;
+}
+.chart-track {
+  display: flex;
+  height: 10px;
+  background: #f3f6f8;
+  border-radius: 999px;
+  overflow: hidden;
+}
+.chart-part.boss { background: #17686e; }
+.chart-part.liepin { background: #c46b2d; }
+.chart-part.fixture { background: #8b97a1; }
+.chart-legend {
+  display: flex;
+  gap: 16px;
+  margin-top: 6px;
+  color: #80909c;
+  font-size: 12px;
+}
+.chart-legend i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 99px;
+}
+.chart-legend .boss { background: #17686e; }
+.chart-legend .liepin { background: #c46b2d; }
+.chart-legend .fixture { background: #8b97a1; }
+.chart-styles {
+  margin-bottom: 14px;
+}
+.chart-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.chart-svg text {
+  fill: #80909c;
+  font-size: 11px;
+}
+.chart-svg .grid {
+  stroke: #e6edf1;
+  stroke-width: 1;
+}
+.chart-svg .boss { stroke: #17686e; fill: #17686e; }
+.chart-svg .liepin { stroke: #c46b2d; fill: #c46b2d; }
+.chart-svg .fixture { stroke: #8b97a1; fill: #8b97a1; }
+.chart-svg .line { fill: none; stroke-width: 2.5; }
+.chart-svg circle { stroke: #fff; stroke-width: 1.5; }
+.chart-svg .area { stroke: none; opacity: 0.88; }

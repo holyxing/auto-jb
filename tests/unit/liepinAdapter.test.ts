@@ -30,6 +30,15 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
+it("ignores the header chat link and blocks only a closable communication panel", async () => {
+  setup();
+  document.querySelector("header")!.insertAdjacentHTML("beforeend", `<span>我的沟通</span>`);
+  expect((await new LiepinAdapter("doc").snapshot()).blocked).toBe("");
+  document.body.insertAdjacentHTML("beforeend",
+    `<aside><h2>我的沟通</h2><button aria-label="关闭">×</button></aside>`);
+  expect((await new LiepinAdapter("doc").snapshot()).blocked).toBe("猎聘沟通面板仍打开，需关闭后继续");
+});
+
 it("binds hunter and direct job IDs and skips a card that already says continue-chat", async () => {
   setup();
   const adapter = new LiepinAdapter("doc");
@@ -67,6 +76,34 @@ it("records an already-contacted detail page without clicking chat", async () =>
   await adapter.execute({ action: "SELECT", job_key: "a:123" } as never, () => true);
   const after = await adapter.execute({ action: "CONTACT", job_key: "a:123" } as never, () => true);
   expect(after.detail?.contact_button).toBe("ALREADY_CONTACTED");
+  expect(adapter.contactClickDispatched).toBe(false);
+});
+
+it("skips a paused or offline detail page without clicking chat", async () => {
+  setup();
+  vi.mocked(chrome.runtime.sendMessage).mockResolvedValue({
+    ok: true, value: { clicked: false, effect: false, already: false, unavailable: true, closed: true },
+  });
+  const adapter = new LiepinAdapter("doc");
+  await adapter.execute({ action: "SELECT", job_key: "a:123" } as never, () => true);
+  const after = await adapter.execute({ action: "CONTACT", job_key: "a:123" } as never, () => true);
+  expect(after.detail?.contact_button).toBe("MISSING");
+  expect(adapter.contactClickDispatched).toBe(false);
+});
+
+it("skips a paused detail after the click window has expired", async () => {
+  setup();
+  vi.mocked(chrome.runtime.sendMessage).mockResolvedValue({
+    ok: true, value: { clicked: false, effect: false, already: false, unavailable: true, closed: true },
+  });
+  const adapter = new LiepinAdapter("doc");
+  await adapter.execute({ action: "SELECT", job_key: "a:123" } as never, () => true);
+  const after = await adapter.execute(
+    { action: "CONTACT", job_key: "a:123" } as never,
+    () => true,
+    () => false,
+  );
+  expect(after.detail?.contact_button).toBe("MISSING");
   expect(adapter.contactClickDispatched).toBe(false);
 });
 

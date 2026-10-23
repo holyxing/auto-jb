@@ -1,7 +1,7 @@
 import copy
 import time
 
-from auto_jb.db import Command, Run
+from auto_jb.db import Command, Connection, Run
 from conftest import snapshot, start_verify
 from sqlalchemy import select
 
@@ -47,6 +47,21 @@ def test_claim_once_and_stale_detail(system):
     assert c.post(f"/api/bridge/commands/{cmd['id']}/claim", headers=b, json=stale).status_code == 409
     assert c.post(f"/api/bridge/commands/{cmd['id']}/claim", headers=b, json=snap).status_code == 200
     assert c.post(f"/api/bridge/commands/{cmd['id']}/claim", headers=b, json=snap).status_code == 409
+
+
+def test_resume_follows_the_reloaded_page(system):
+    c, a, b, app = system
+    run, _, snap, old = start_verify(system)
+    assert c.post(f"/api/runs/{run}/control", headers=a, json={"action": "pause"}).status_code == 200
+    with app.state.factory.begin() as db:
+        db.get(Connection, old).seen_at = 0
+    fresh = {**snap, "session": "browser-2"}
+    new_id = c.post("/api/bridge/tick", headers=b, json=fresh).json()["connection_id"]
+    assert new_id != old
+    assert c.post(f"/api/runs/{run}/control", headers=a, json={"action": "resume"}).status_code == 200
+    restored = next(item for item in c.get("/api/state", headers=a).json()["runs"] if item["id"] == run)
+    assert restored["connection_id"] == new_id
+    assert restored["status"] == "RUNNING"
 
 
 def test_pause_revokes_issued_action(system):
@@ -270,18 +285,22 @@ def test_boss_unknown_click_is_quarantined_without_blocking_other_jobs(system):
     assert next_cmd["job_key"] == "new-job"
 
 
-def test_failed_boss_selection_preserves_reason_and_can_reselect_on_resume(system):
+def test_failed_boss_selection_skips_and_continues(system):
     c, a, b, app = system
     first = snapshot("first")
     second = {"key": "second", "title": "AI产品经理", "company": "测试企业", "city": "北京"}
-    first["cards"].append(second)
+    third = {"key": "third", "title": "AI产品经理", "company": "第三企业", "city": "北京"}
+    first["cards"].extend([second, third])
+    first["list_signature"] = "first|second|third"
     first.update({
         "source": "boss", "url": "https://www.zhipin.com/web/geek/jobs",
-        "send_ready": False, "contact_click_ready": True,
+        "send_ready": False, "contact_click_ready": True, "list_end": False,
         "profile": "test:boss-click-v1:abcdef123456",
     })
     connection = c.post("/api/bridge/tick", headers=b, json=first).json()["connection_id"]
-    run = c.post("/api/runs", headers=a, json={"connection_id": connection, "mode": "auto"}).json()["id"]
+    run = c.post("/api/runs", headers=a, json={
+        "connection_id": connection, "mode": "auto", "max_jobs": 3,
+    }).json()["id"]
     selected = c.post("/api/bridge/tick", headers=b, json=first).json()["command"]
     assert selected["action"] == "SELECT"
     selection_claim = c.post(f"/api/bridge/commands/{selected['id']}/claim", headers=b, json=first)
@@ -298,32 +317,21 @@ def test_failed_boss_selection_preserves_reason_and_can_reselect_on_resume(syste
     })
     assert c.post("/api/bridge/tick", headers=b, json=first).json()["command"] is None
     elapsed_boss_cooldown(app, contact["id"])
-    blocked_select = c.post("/api/bridge/tick", headers=b, json=first).json()["command"]
-    assert blocked_select["action"] == "SELECT" and blocked_select["job_key"] == "second"
-    c.post(f"/api/bridge/commands/{blocked_select['id']}/claim", headers=b, json=first)
-    c.post(f"/api/bridge/commands/{blocked_select['id']}/result", headers=b, json={
+    failed_select = c.post("/api/bridge/tick", headers=b, json=first).json()["command"]
+    assert failed_select["action"] == "SELECT" and failed_select["job_key"] == "second"
+    c.post(f"/api/bridge/commands/{failed_select['id']}/claim", headers=b, json=first)
+    c.post(f"/api/bridge/commands/{failed_select['id']}/result", headers=b, json={
         "outcome": "NO_EFFECT", "snapshot": first, "note": "目标被遮挡",
     })
     with app.state.factory.begin() as db:
         task = db.get(Run, run)
-        assert task.reason == "目标被遮挡"
+        assert task.status == "RUNNING"
         assert task.settings["active_key"] == ""
-        # Prior releases left the failed selection as the active target.
-        task.settings = {**task.settings, "active_key": "second"}
-    c.post("/api/bridge/halt", headers=b, json=first)
-    assert next(r for r in c.get("/api/state", headers=a).json()["runs"] if r["id"] == run)["reason"] == "目标被遮挡"
-    assert c.post(f"/api/runs/{run}/control", headers=a, json={"action": "resume"}).status_code == 200
-    retried = c.post("/api/bridge/tick", headers=b, json=first).json()["command"]
-    assert retried["action"] == "SELECT" and retried["job_key"] == "second"
-    job = next(j for j in c.get("/api/state", headers=a).json()["jobs"] if j["key"] == "first")
-    assert job["contact"] == "CLICKED"
-    assert c.post(f"/api/runs/{run}/control", headers=a, json={"action": "stop"}).status_code == 200
-    continued = c.post("/api/runs", headers=a, json={
-        "connection_id": connection, "mode": "auto", "previous_run": run,
-    })
-    assert continued.status_code == 200, continued.text
-    next_command = c.post("/api/bridge/tick", headers=b, json=first).json()["command"]
-    assert next_command["action"] == "SELECT" and next_command["job_key"] == "second"
+        assert "second" in task.settings["done"]
+    nxt = c.post("/api/bridge/tick", headers=b, json=first).json()["command"]
+    assert nxt["action"] == "SELECT" and nxt["job_key"] == "third"
+    job = next(j for j in c.get("/api/state", headers=a).json()["jobs"] if j["key"] == "second")
+    assert job["reason"] == "目标被遮挡"
 
 
 def test_cancelled_boss_selection_reselects_after_resume_instead_of_pausing(system):
@@ -519,7 +527,122 @@ def test_liepin_already_contacted_detail_skips_and_continues(system):
     assert nxt["action"] == "SELECT" and nxt["job_key"] == "a:next"
 
 
-def test_liepin_unknown_job_is_skipped_when_run_resumes(system):
+def test_site_auto_includes_beijing_search_results_without_strict_match(system):
+    c, a, b, app = system
+    first = snapshot("a:loose")
+    first["cards"][0] = {
+        "key": "a:loose", "title": "AI售前解决方案专家", "company": "测试企业", "city": "北京",
+    }
+    first["detail"] = {
+        **first["cards"][0], "description": "负责客户方案交流", "contact_button": "READY",
+    }
+    first["selected_key"] = "a:loose"
+    first["list_signature"] = "a:loose"
+    first.update({
+        "source": "liepin", "url": "https://www.liepin.com/zhaopin/",
+        "profile": "liepin:liepin-click-v2:v1", "send_ready": False,
+        "contact_click_ready": True, "list_end": True,
+    })
+    connection = c.post("/api/bridge/tick", headers=b, json=first).json()["connection_id"]
+    c.post("/api/runs", headers=a, json={
+        "connection_id": connection, "mode": "auto", "max_jobs": 1,
+    })
+    selection = c.post("/api/bridge/tick", headers=b, json=first).json()["command"]
+    assert selection["action"] == "SELECT" and selection["job_key"] == "a:loose"
+    c.post(f"/api/bridge/commands/{selection['id']}/claim", headers=b, json=first)
+    c.post(f"/api/bridge/commands/{selection['id']}/result", headers=b, json={
+        "outcome": "OK", "snapshot": first,
+    })
+    contact = c.post("/api/bridge/tick", headers=b, json=first).json()["command"]
+    assert contact["action"] == "CONTACT" and contact["job_key"] == "a:loose"
+    state = c.get("/api/state", headers=a).json()
+    job = next(item for item in state["jobs"] if item["key"] == "a:loose")
+    assert job["decision"] == "INCLUDE"
+    assert job["reason"] == "搜索结果岗位，本轮直接投递"
+
+
+def test_boss_detail_mismatch_skips_and_continues(system):
+    c, a, b, app = system
+    first = snapshot("first")
+    second = {"key": "second", "title": "AI产品经理", "company": "另一企业", "city": "北京"}
+    first["cards"].append(second)
+    first["list_signature"] = "first|second"
+    first.update({
+        "source": "boss", "url": "https://www.zhipin.com/web/geek/jobs",
+        "send_ready": False, "contact_click_ready": True, "list_end": False,
+        "profile": "test:boss-click-v1:abcdef123456",
+    })
+    selected = copy.deepcopy(first)
+    selected["selected_key"] = "first"
+    selected["detail"] = {
+        **first["cards"][0],
+        "title": "AI销售专家-Base美国（驻美国）",
+        "description": "负责AI产品",
+        "contact_button": "READY",
+    }
+    connection = c.post("/api/bridge/tick", headers=b, json=first).json()["connection_id"]
+    run = c.post("/api/runs", headers=a, json={
+        "connection_id": connection, "mode": "auto", "max_jobs": 2,
+    }).json()["id"]
+    selection = c.post("/api/bridge/tick", headers=b, json=first).json()["command"]
+    assert selection["action"] == "SELECT" and selection["job_key"] == "first"
+    c.post(f"/api/bridge/commands/{selection['id']}/claim", headers=b, json=first)
+    c.post(f"/api/bridge/commands/{selection['id']}/result", headers=b, json={
+        "outcome": "OK", "snapshot": selected,
+    })
+    with app.state.factory.begin() as db:
+        assert db.get(Command, selection["id"]).status == "SUCCEEDED"
+        assert db.get(Run, run).status == "RUNNING"
+        assert "first" in db.get(Run, run).settings["done"]
+    state = c.get("/api/state", headers=a).json()
+    assert next(job for job in state["jobs"] if job["key"] == "first")["reason"] == \
+        "左右岗位标题或公司不一致，已跳过"
+    nxt = c.post("/api/bridge/tick", headers=b, json=selected).json()["command"]
+    assert nxt["action"] == "SELECT" and nxt["job_key"] == "second"
+
+
+def test_liepin_closed_detail_skips_and_continues(system):
+    c, a, b, app = system
+    first = snapshot("a:closed")
+    second_card = {"key": "a:next", "title": "AI产品经理", "company": "另一企业", "city": "北京"}
+    first.update({
+        "source": "liepin", "url": "https://www.liepin.com/zhaopin/",
+        "profile": "liepin:liepin-click-v2:v1", "send_ready": False,
+        "contact_click_ready": True, "list_end": False,
+        "cards": [first["cards"][0], second_card],
+        "list_signature": "a:closed|a:next",
+    })
+    selected = copy.deepcopy(first)
+    selected["selected_key"] = "a:closed"
+    selected["detail"] = {**first["cards"][0], "description": "", "contact_button": "READY"}
+    closed = copy.deepcopy(selected)
+    closed["detail"]["contact_button"] = "MISSING"
+    connection = c.post("/api/bridge/tick", headers=b, json=first).json()["connection_id"]
+    run = c.post("/api/runs", headers=a, json={
+        "connection_id": connection, "mode": "auto", "max_jobs": 2,
+    }).json()["id"]
+    selection = c.post("/api/bridge/tick", headers=b, json=first).json()["command"]
+    c.post(f"/api/bridge/commands/{selection['id']}/claim", headers=b, json=first)
+    c.post(f"/api/bridge/commands/{selection['id']}/result", headers=b, json={
+        "outcome": "OK", "snapshot": selected,
+    })
+    contact = c.post("/api/bridge/tick", headers=b, json=selected).json()["command"]
+    assert contact["action"] == "CONTACT" and contact["job_key"] == "a:closed"
+    c.post(f"/api/bridge/commands/{contact['id']}/claim", headers=b, json=selected)
+    c.post(f"/api/bridge/commands/{contact['id']}/result", headers=b, json={
+        "outcome": "OK", "snapshot": closed, "click_dispatched": False,
+        "effect_observed": False,
+    })
+    with app.state.factory.begin() as db:
+        assert db.get(Command, contact["id"]).status == "SUCCEEDED"
+        assert db.get(Run, run).status == "RUNNING"
+    state = c.get("/api/state", headers=a).json()
+    assert next(job for job in state["jobs"] if job["key"] == "a:closed")["contact"] == "CLOSED"
+    nxt = c.post("/api/bridge/tick", headers=b, json=closed).json()["command"]
+    assert nxt["action"] == "SELECT" and nxt["job_key"] == "a:next"
+
+
+def test_liepin_unknown_job_is_skipped_and_continues(system):
     c, a, b, app = system
     first = snapshot("a:unknown")
     second_card = {"key": "a:next", "title": "AI产品经理", "company": "另一企业", "city": "北京"}
@@ -551,8 +674,8 @@ def test_liepin_unknown_job_is_skipped_when_run_resumes(system):
         "effect_observed": False,
     })
     with app.state.factory.begin() as db:
-        assert db.get(Run, run).status == "WAITING_HUMAN"
-    assert c.post(f"/api/runs/{run}/control", headers=a, json={"action": "resume"}).status_code == 200
+        assert db.get(Run, run).status == "RUNNING"
+        assert "a:unknown" in db.get(Run, run).settings["done"]
     assert c.post("/api/bridge/tick", headers=b, json=selected).json()["command"] is None
     elapsed_boss_cooldown(app, command["id"])
     nxt = c.post("/api/bridge/tick", headers=b, json=selected).json()["command"]
@@ -912,6 +1035,48 @@ def test_extension_can_only_control_its_own_connections(system):
         c.post(f"/api/device/runs/{run}/control", headers=other, json={"action": "stop"}).status_code == 403
     )
     assert c.post(f"/api/device/runs/{run}/control", headers=b, json={"action": "stop"}).status_code == 200
+
+
+def test_resume_send_is_stored_on_the_job(system):
+    c, a, b, _ = system
+    run, cmd, snap, _ = start_verify(system, send_resume=True, resume_name="指定简历.pdf")
+    assert cmd["action"] == "CONTACT"
+    c.post(f"/api/bridge/commands/{cmd['id']}/claim", headers=b, json=snap)
+    opened = {
+        **snap,
+        "phase": "CHAT",
+        "chat": {
+            "key": "director",
+            "conversation": "chat-1",
+            "contact_at": time.time(),
+            "contact": "CONTACT_INITIATED",
+            "resume": "READY",
+            "resume_name": "指定简历.pdf",
+            "evidence": "已发送招呼",
+        },
+    }
+    assert c.post(
+        f"/api/bridge/commands/{cmd['id']}/result", headers=b, json={"outcome": "OK", "snapshot": opened}
+    ).status_code == 200
+    send = c.post("/api/bridge/tick", headers=b, json=opened).json()["command"]
+    assert send["action"] == "RESUME_SEND"
+    c.post(f"/api/bridge/commands/{send['id']}/claim", headers=b, json=opened)
+    sent = {
+        **opened,
+        "chat": {
+            **opened["chat"],
+            "resume": "SENT",
+            "resume_at": time.time(),
+        },
+    }
+    assert c.post(
+        f"/api/bridge/commands/{send['id']}/result", headers=b, json={"outcome": "OK", "snapshot": sent}
+    ).status_code == 200
+    job = next(item for item in c.get("/api/state", headers=a).json()["jobs"] if item["key"] == "director")
+    assert job["resume"] == "SENT"
+    assert job["resume_name"] == "指定简历.pdf"
+    assert job["resume_at"] > 0
+    assert run
 
 
 def test_start_rejects_changed_account_display(system):

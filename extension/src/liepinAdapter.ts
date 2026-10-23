@@ -101,24 +101,27 @@ function nextPageButton(): HTMLElement | null {
 }
 
 function communicationPanel(): { present: boolean; close: HTMLElement | null } {
+  // 页头导航里的「我的沟通」不是已打开的沟通窗，不能因此停住整页。
   const titles = [...document.querySelectorAll<HTMLElement>("div,span,p,h2,h3")]
     .filter((element) => visible(element) && element.textContent?.trim() === "我的沟通" &&
+      !element.closest("header, nav") &&
       ![...element.children].some((child) => child.textContent?.trim() === "我的沟通"));
-  if (titles.length !== 1) return { present: titles.length > 0, close: null };
-  let node: HTMLElement | null = titles[0];
-  for (let depth = 0; node && depth < 6; depth++, node = node.parentElement) {
-    if (jobLinks(node).length) break;
-    const controls = [...node.querySelectorAll<HTMLElement>(
-      "button,[role='button'],img[alt],svg[aria-label]",
-    )].filter((element) => visible(element) &&
-      /^(close|关闭)$/i.test(element.getAttribute("aria-label")?.trim() ||
-        element.getAttribute("title")?.trim() || element.getAttribute("alt")?.trim() ||
-        element.textContent?.trim() || ""));
-    const outermost = controls.filter((element) =>
-      !controls.some((other) => other !== element && other.contains(element)));
-    if (outermost.length === 1) return { present: true, close: outermost[0] };
+  for (const title of titles) {
+    let node: HTMLElement | null = title;
+    for (let depth = 0; node && depth < 6; depth++, node = node.parentElement) {
+      if (node.closest("header, nav") || jobLinks(node).length) break;
+      const controls = [...node.querySelectorAll<HTMLElement>(
+        "button,[role='button'],img[alt],svg[aria-label]",
+      )].filter((element) => visible(element) &&
+        /^(close|关闭)$/i.test(element.getAttribute("aria-label")?.trim() ||
+          element.getAttribute("title")?.trim() || element.getAttribute("alt")?.trim() ||
+          element.textContent?.trim() || ""));
+      const outermost = controls.filter((element) =>
+        !controls.some((other) => other !== element && other.contains(element)));
+      if (outermost.length === 1) return { present: true, close: outermost[0] };
+    }
   }
-  return { present: true, close: null };
+  return { present: false, close: null };
 }
 
 export class LiepinAdapter {
@@ -278,7 +281,7 @@ export class LiepinAdapter {
       let result: {
         ok?: boolean;
         error?: string;
-        value?: { clicked?: boolean; effect?: boolean; already?: boolean; closed?: boolean };
+        value?: { clicked?: boolean; effect?: boolean; already?: boolean; unavailable?: boolean; closed?: boolean };
       } | undefined;
       try {
         result = await chrome.runtime.sendMessage({
@@ -295,14 +298,16 @@ export class LiepinAdapter {
       }
       if (result?.value?.clicked) this.contactClickDispatched = true;
       if (!result?.ok) throw new Error(result?.error ?? "猎聘明细页点击失败");
-      if (!postClickAllowed()) throw new Error("点击前页面已由用户接管");
       const value = result.value ?? {};
-      if (value.already && !value.clicked) {
+      // 没有点击聊一聊。职位下线或已沟通都继续下一岗，不因明细页打开较慢而暂停。
+      if (!value.clicked && (value.unavailable || value.already)) {
         if (value.closed === false) throw new Error("猎聘明细页未能关闭");
         const current = await this.snapshot();
-        if (current.detail) current.detail.contact_button = "ALREADY_CONTACTED";
+        if (current.detail)
+          current.detail.contact_button = value.unavailable ? "MISSING" : "ALREADY_CONTACTED";
         return current;
       }
+      if (!postClickAllowed()) throw new Error("点击前页面已由用户接管");
       if (!value.clicked) throw new Error(result.error ?? "明细页未点击聊一聊");
       if (!value.effect) throw new Error("真实点击后未观察到猎聘会话或已沟通状态");
       if (value.closed === false) throw new Error("猎聘明细页未能关闭");

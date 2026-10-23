@@ -190,7 +190,7 @@ export class Adapter {
         ) blocked = "左右岗位标题、公司或地点不一致";
       }
       if (searchLimited)
-        blocked = "当前职位页不是扩展配置的北京搜索入口，请点击扩展中的打开职位页";
+        blocked = "当前职位页不是扩展配置的北京搜索入口，请展开下方搜索入口，点击「打开配置的 BOSS 北京搜索页」";
     } catch (e) {
       blocked = e instanceof Error ? e.message : "页面读取异常";
     }

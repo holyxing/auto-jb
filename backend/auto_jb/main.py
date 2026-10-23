@@ -29,7 +29,7 @@ def token_hash(value):
 
 def create_app(database_url=None, admin_token=None, fixture_enabled=None):
     admin = admin_token or os.getenv("AUTOJB_ADMIN_TOKEN", "")
-    if len(admin) < 24:
+    if not admin:
         raise RuntimeError("Set AUTOJB_ADMIN_TOKEN with scripts/setup.py; refusing insecure startup")
     fixture = (
         fixture_enabled
@@ -39,8 +39,39 @@ def create_app(database_url=None, admin_token=None, fixture_enabled=None):
     origin = os.getenv("AUTOJB_ORIGIN", "http://127.0.0.1:17830")
     engine, factory = database(database_url)
 
+    def remember_sent_resumes():
+        # 旧记录的简历文件名只存在命令快照里，启动时补写到岗位，避免工作台缺字段。
+        with factory() as db:
+            pending = list(db.scalars(select(Job).where(
+                Job.resume.in_(("SENT", "ALREADY_SENT", "UNKNOWN")),
+                or_(Job.resume_name == "", Job.resume_name.is_(None)),
+            )))
+            for job in pending:
+                command = db.scalar(
+                    select(Command)
+                    .join(Run, Run.id == Command.run_id)
+                    .where(
+                        Run.scope == job.scope,
+                        Command.job_key == job.key,
+                        Command.action == "RESUME_SEND",
+                    )
+                    .order_by(Command.issued_at.desc())
+                )
+                chat = {}
+                if command and isinstance(command.result, dict):
+                    snapshot = command.result.get("snapshot")
+                    if isinstance(snapshot, dict) and isinstance(snapshot.get("chat"), dict):
+                        chat = snapshot["chat"]
+                name = str(chat.get("resume_name") or "")
+                if not name or command is None:
+                    continue
+                job.resume_name = name
+                job.resume_at = float(chat.get("resume_at") or command.issued_at or 0)
+            db.commit()
+
     @asynccontextmanager
     async def lifespan(app):
+        remember_sent_resumes()
         yield
         engine.dispose()
 
@@ -174,13 +205,7 @@ def create_app(database_url=None, admin_token=None, fixture_enabled=None):
 
     @app.get("/api/state", dependencies=[Depends(is_admin)])
     def state(db=Depends(db_session)):
-        recent_runs = select(Run.id).order_by(Run.created_at.desc()).limit(100)
-        unresolved_runs = select(Command.run_id).where(Command.status == "UNKNOWN")
-        runs = list(db.scalars(
-            select(Run)
-            .where(or_(Run.id.in_(recent_runs), Run.id.in_(unresolved_runs)))
-            .order_by(Run.created_at.desc())
-        ))
+        runs = list(db.scalars(select(Run).order_by(Run.created_at.desc())))
         connections = list(db.scalars(select(Connection).order_by(Connection.seen_at.desc())))
         sample_devices = set(db.scalars(
             select(Device.id).where(Device.name.in_(("Liepin local fixture", "test_only:liepin-fixture")))
@@ -200,11 +225,9 @@ def create_app(database_url=None, admin_token=None, fixture_enabled=None):
                 if run.status == "RUNNING":
                     flow.pause(db, run, "浏览器连接中断；恢复前核验未决动作")
         jobs = list(db.scalars(select(Job).order_by(Job.created_at)))
-        recent_commands = select(Command.id).order_by(Command.issued_at.desc()).limit(100)
         commands = list(db.execute(
             select(Command, Run.scope)
             .join(Run, Run.id == Command.run_id)
-            .where(or_(Command.id.in_(recent_commands), Command.status == "UNKNOWN"))
             .order_by(Command.issued_at.desc())
         ))
         return {
@@ -267,6 +290,8 @@ def create_app(database_url=None, admin_token=None, fixture_enabled=None):
                         "evidence",
                         "contact",
                         "resume",
+                        "resume_name",
+                        "resume_at",
                         "run_id",
                     ]},
                     "source": j.scope.partition(":")[0],
@@ -407,15 +432,26 @@ def create_app(database_url=None, admin_token=None, fixture_enabled=None):
                 select(Command).where(Command.run_id == run.id, Command.status == "UNKNOWN")
             ):
                 raise HTTPException(409, "存在未决动作，请先核验并登记结果")
-            c = db.get(Connection, run.connection_id)
-            if (
-                not c
-                or c.seen_at < time.time() - 15
-                or flow.scope(c.snapshot) != run.scope
-                or c.profile != run.profile
-                or c.snapshot["blocked"]
-            ):
-                raise HTTPException(409, "连接、账号或页面配置变化，请重新核对")
+            current = db.get(Connection, run.connection_id)
+            if not current:
+                raise HTTPException(409, "招聘页已断开，请刷新该标签页并保持在前台后再恢复")
+            now = time.time()
+            # 扩展重载会换新的页面连接。同一账号、同一配置的新连接可以接上这轮任务。
+            usable = [
+                item for item in db.scalars(select(Connection).where(Connection.device_id == current.device_id))
+                if item.seen_at >= now - 15
+                and flow.scope(item.snapshot) == run.scope
+                and item.profile == run.profile
+            ]
+            usable.sort(key=lambda item: (item.id == run.connection_id, item.seen_at), reverse=True)
+            if not usable:
+                raise HTTPException(409, "招聘页已断开，请刷新该标签页并保持在前台后再恢复")
+            open_pages = [item for item in usable if not item.snapshot.get("blocked")]
+            if not open_pages:
+                raise HTTPException(409, usable[0].snapshot.get("blocked") or "页面无法操作")
+            c = open_pages[0]
+            if c.id != run.connection_id:
+                run.connection_id = c.id
             if run.deadline <= time.time():
                 raise HTTPException(409, "本批次已到期，请停止后创建续接批次")
             latest_command = db.scalar(

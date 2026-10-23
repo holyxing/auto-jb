@@ -23,5 +23,5 @@ for (const name of ["content", "worker", "popup"])
     minify: false,
     define: { __ADAPTER_VERSION__: JSON.stringify(version) },
   });
-for (const file of ["manifest.json", "popup.html"])
+for (const file of ["manifest.json", "popup.html", "jobTitles.json"])
   await copyFile(`extension/${file}`, `dist/extension/${file}`);

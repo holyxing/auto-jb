@@ -7,6 +7,11 @@ it("requires the AI product search and Beijing filter, not volatile tracking IDs
   expect(isConfiguredLiepinJobsUrl("https://www.liepin.com/zhaopin/?key=ai产品经理")).toBe(false);
   expect(isConfiguredLiepinJobsUrl("https://www.liepin.com/zhaopin/?city=010&dq=010&key=销售经理")).toBe(false);
   expect(isConfiguredLiepinJobsUrl(`${LIEPIN_JOBS_URL}&_security_check=1`)).toBe(false);
+  expect(isConfiguredLiepinJobsUrl(
+    "https://www.liepin.com/zhaopin/?city=010&dq=010&pubTime=&currentPage=1&pageSize=40&key=ai产品经理&suggestId=trace",
+  )).toBe(true);
+  expect(isConfiguredLiepinJobsUrl(`${LIEPIN_JOBS_URL}&pubTime=1`)).toBe(false);
+  expect(isConfiguredLiepinJobsUrl(`${LIEPIN_JOBS_URL}&industry=internet`)).toBe(false);
 });
 
 it("accepts a configured Beijing keyword and rejects filters or foreign hosts", () => {

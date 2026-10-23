@@ -3,8 +3,9 @@ import { liveConnections, preferredConnection } from "./popupConnections";
 import type { BossChatProbe, ChatDelta } from "./bossChat";
 import { isConfiguredBossJobsUrl } from "./bossJobsUrl";
 import { isConfiguredLiepinJobsUrl } from "./liepinJobsUrl";
-import { DEFAULT_SEARCH_SETTINGS, parseContactInterval, parseSearchSettings,
-  type SearchSettings } from "./searchSettings";
+import { BUILT_IN_JOB_TITLES, DEFAULT_SEARCH_SETTINGS,
+  parseContactInterval, parseSearchSettings, searchSettingsWithTitle,
+  titleFromSearchSettings, type SearchSettings } from "./searchSettings";
 const $ = <T extends HTMLElement>(id: string) =>
   document.getElementById(id) as T;
 type Connection = {
@@ -60,12 +61,11 @@ let active: Run | undefined;
 let latest: Run | undefined;
 let busy = false;
 let manualConnection = false;
-// null opens a new tab; a number replaces an existing BOSS jobs/chat tab.
-let targetTab: number | null | undefined;
 let chatTab = false;
 let chatTabId: number | undefined;
 let activeTabUrl = "";
 let pageUnreachable = false;
+let attachError = "";
 let waking = false;
 let refreshing = false;
 let searchSettings: SearchSettings = DEFAULT_SEARCH_SETTINGS;
@@ -127,10 +127,48 @@ function tabMessage(tabId: number, message: unknown, ms: number) {
     });
   });
 }
+function attachFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : "无法把扩展挂到当前招聘页";
+  if (message.includes("Access to storage is not allowed"))
+    return "扩展还在连接当前招聘页，请再打开一次弹窗";
+  if (message.includes("Cannot access contents"))
+    return "扩展没有权限挂到这个招聘页，请在扩展管理里重新加载";
+  if (message.includes("Receiving end") || message.includes("message port closed"))
+    return "招聘页没有回应扩展";
+  return message;
+}
 async function wakeTab(tabId: number) {
-  const ping = () => tabMessage(tabId, { type: "wake" }, 2000);
-  const response = await ping() as { ok?: boolean } | undefined;
-  if (!response?.ok) return;
+  const expected = (await rpc({ type: "boot" }) as { boot?: string }).boot ?? "";
+  const ping = async () => {
+    const response = await tabMessage(tabId, { type: "wake2" }, 2500) as {
+      ok?: boolean;
+      boot?: string;
+      error?: string;
+    } | undefined;
+    if (response?.ok && response.boot === expected) return "";
+    return response?.error || "招聘页没有完成连接";
+  };
+  try {
+    if (!(await ping())) return;
+  } catch {
+    // 扩展重载后，残留的旧脚本不回应 wake2。
+  }
+  try {
+    await rpc({ type: "attach", tabId });
+  } catch (error) {
+    throw new Error(attachFailure(error));
+  }
+  let last = "招聘页没有完成连接";
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      last = await ping();
+      if (!last) return;
+    } catch (error) {
+      last = attachFailure(error);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+  throw new Error(last);
 }
 function connection() {
   return current?.connections.find(
@@ -216,7 +254,7 @@ function render() {
     (chatTab && !conn ? "消息页尚不能关联具体岗位，请返回职位列表" : "") ||
     (!profileReady ? "猎聘扩展仍是旧版：请在 Chrome 扩展管理中重新加载，然后刷新招聘页" : "") ||
     conn?.blocked ||
-    (pageUnreachable && !conn ? "当前招聘页未连接，请刷新该标签页" : "") ||
+    (pageUnreachable && !conn ? (attachError || "扩展没有连上当前招聘页") : "") ||
     (!online ? "当前没有在线的岗位列表，可打开设定的北京搜索页" :
       active?.status === "WAITING_HUMAN" || active?.status === "PAUSED_USER"
         ? unknownBlocksResume
@@ -253,15 +291,24 @@ function render() {
   $("usage").textContent = siteClick
     ? `使用顺序：登录${conn?.source === "liepin" ? "猎聘" : " BOSS"} → 打开北京搜索页 → 核对岗位 → 启动本轮；点击后由你核对会话。`
     : "验证会联系当前岗位招聘方，并可能发送站内默认招呼。";
-  $("broad").hidden = targetTab === undefined;
-  $<HTMLButtonElement>("broad").disabled = busy || !!active;
+  // 以输入框里的草稿 URL 为准；职位标题一改，打开按钮即可再点。
+  const draft = draftSearchSettings();
+  const onBossSearch = !!activeTabUrl &&
+    isConfiguredBossJobsUrl(activeTabUrl, draft.bossUrl);
+  $("broad").textContent = onBossSearch
+    ? "已打开配置的 BOSS 北京搜索页"
+    : "打开配置的 BOSS 北京搜索页";
+  $<HTMLButtonElement>("broad").disabled = busy || !!active || onBossSearch;
   const onLiepinSearch = !!activeTabUrl &&
-    isConfiguredLiepinJobsUrl(activeTabUrl, searchSettings.liepinUrl);
+    isConfiguredLiepinJobsUrl(activeTabUrl, draft.liepinUrl);
   $("open-liepin").textContent = onLiepinSearch
     ? "已打开配置的猎聘北京搜索页"
     : "打开配置的猎聘北京搜索页";
   $<HTMLButtonElement>("open-liepin").disabled = busy || !!active || onLiepinSearch;
   $<HTMLButtonElement>("save-search-settings").disabled = busy || settingsChangeBlocked();
+  // 搜索页与配置不一致时展开入口，避免找不到打开按钮。
+  if (conn?.search_limited || /北京搜索入口|已配置的猎聘北京搜索页/.test(conn?.blocked ?? ""))
+    $<HTMLDetailsElement>("automation-settings").open = true;
   $("reason").textContent = latest
     ? (names[latest.reason] ?? latest.reason) +
       (latest.lease_until > Date.now() / 1000 && latest.status !== "RUNNING"
@@ -271,6 +318,14 @@ function render() {
   const cooldownSeconds = latest?.status === "RUNNING"
     ? Math.max(0, Math.ceil(latest.cooldown_until - Date.now() / 1000))
     : 0;
+  const delivered = current?.jobs.filter((job) =>
+    job.scope === scope && (
+      job.contact === "CLICKED" || job.contact === "CONTACT_INITIATED"
+      || job.resume === "SENT" || job.resume === "ALREADY_SENT"
+    ),
+  ).length ?? 0;
+  $("delivered").hidden = !scope;
+  $("delivered").textContent = `已投递 ${delivered}`;
   $("progress").textContent = latest
     ? `本轮预算计数 ${latest.visited} / ${latest.budget} · 点击间隔 ${latest.contact_interval_seconds ?? 5} 秒${cooldownSeconds > 0 ? ` · 还需等待 ${cooldownSeconds} 秒` : ""}`
     : "沿当前 AI产品经理搜索结果的左侧列表读取，逐岗判断 AI 与产品相关性";
@@ -329,7 +384,6 @@ async function refresh() {
   );
   if (!stored.deviceToken) {
     current = null;
-    targetTab = undefined;
     chatTab = false;
     chatTabId = undefined;
     chatProbe = null;
@@ -343,11 +397,22 @@ async function refresh() {
   const activeFresh = !!activeTab?.id && current?.connections.some(
     (item) => item.tab === activeTab.id && Date.now() / 1000 - item.seen_at < 15,
   );
+  attachError = "";
   if (activeTab?.id && activeTab.url && isControlledPage(activeTab.url) && !activeFresh && !waking) {
     waking = true;
-    await wakeTab(activeTab.id).catch(() => {}).finally(() => {
+    try {
+      await wakeTab(activeTab.id);
+    } catch (error) {
+      attachError = error instanceof Error ? error.message : "扩展没有连上当前招聘页";
+    } finally {
       waking = false;
-    });
+    }
+  }
+  // 当前标签不是招聘搜索页，或本轮因切走/重载暂停时，自动拉回配置的搜索页并恢复。
+  try {
+    await rpc({ type: "recoverSiteRun" });
+  } catch {
+    // 恢复失败时仍展示原暂停原因，可手工继续。
   }
   const state: State = await rpc({ type: "panel", action: "state" });
   current = state;
@@ -361,8 +426,6 @@ async function refresh() {
   chatProbe = storedProbe && Date.now() - storedProbe.seen_at < 5000
     ? storedProbe as BossChatProbe
     : null;
-  const activeJobTab = activeUrl?.origin === "https://www.zhipin.com" &&
-    activeUrl.pathname === "/web/geek/jobs";
   state.connections = chatTab
     ? []
     : liveConnections(
@@ -379,6 +442,7 @@ async function refresh() {
   );
   pageUnreachable = !!activeTab?.url && isControlledPage(activeTab.url) &&
     !current!.connections.some((item) => item.tab === activeTab.id);
+  if (!pageUnreachable) attachError = "";
   select.replaceChildren(
     ...current!.connections.map((c) => {
       const option = document.createElement("option");
@@ -390,16 +454,11 @@ async function refresh() {
   if (pageUnreachable) {
     const option = document.createElement("option");
     option.value = "";
-    option.textContent = "当前页未连接，请刷新招聘页";
+    option.textContent = "当前招聘页尚未连上";
     select.append(option);
   }
   if (preferred) select.value = preferred.id;
   else if (pageUnreachable) select.value = "";
-  targetTab = activeJobTab && !isConfiguredBossJobsUrl(activeUrl!, searchSettings.bossUrl)
-    ? activeTab?.id
-    : (chatTab ? activeTab?.id : connection()?.search_limited
-      ? connection()?.tab
-      : !activeJobTab && !connection() ? null : undefined);
   render();
   } finally {
     refreshing = false;
@@ -456,24 +515,115 @@ $("connection").onchange = () => {
   manualConnection = true;
   render();
 };
+function draftSearchSettings(): SearchSettings {
+  try {
+    return parseSearchSettings({
+      bossUrl: $<HTMLInputElement>("boss-search-url").value || searchSettings.bossUrl,
+      liepinUrl: $<HTMLInputElement>("liepin-search-url").value || searchSettings.liepinUrl,
+    });
+  } catch {
+    return searchSettings;
+  }
+}
+async function persistDraftSearchSettings() {
+  const next = draftSearchSettings();
+  await chrome.storage.local.set({ searchSettings: next });
+  searchSettings = next;
+  $<HTMLInputElement>("boss-search-url").value = next.bossUrl;
+  $<HTMLInputElement>("liepin-search-url").value = next.liepinUrl;
+  syncJobTitleControls(titleFromSearchSettings(next));
+  return next;
+}
 $("broad").onclick = () => void act(async () => {
-  if (targetTab === undefined || active)
-    throw new Error("当前页面无需切换或已有运行中的任务");
-  if (targetTab === null) await chrome.tabs.create({ url: searchSettings.bossUrl });
-  else await chrome.tabs.update(targetTab, { url: searchSettings.bossUrl });
+  if (active) throw new Error("已有运行中的任务，请先处理该任务");
+  const next = await persistDraftSearchSettings();
+  const tab = (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
+  const url = tab?.url ? new URL(tab.url) : null;
+  if (url?.origin === "https://www.zhipin.com" && url.pathname === "/web/geek/jobs" && tab.id &&
+      !isConfiguredBossJobsUrl(url, next.bossUrl))
+    await chrome.tabs.update(tab.id, { url: next.bossUrl });
+  else await chrome.tabs.create({ url: next.bossUrl });
 });
 $("open-liepin").onclick = () => void act(async () => {
   if (active) throw new Error("已有运行中的任务，请先处理该任务");
+  const next = await persistDraftSearchSettings();
   const tab = (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
   const url = tab?.url ? new URL(tab.url) : null;
   if (url?.origin === "https://www.liepin.com" && url.pathname === "/zhaopin/" && tab.id &&
-      !isConfiguredLiepinJobsUrl(url, searchSettings.liepinUrl))
-    await chrome.tabs.update(tab.id, { url: searchSettings.liepinUrl });
-  else await chrome.tabs.create({ url: searchSettings.liepinUrl });
+      !isConfiguredLiepinJobsUrl(url, next.liepinUrl))
+    await chrome.tabs.update(tab.id, { url: next.liepinUrl });
+  else await chrome.tabs.create({ url: next.liepinUrl });
 });
+function fillJobTitleSelect() {
+  const select = $<HTMLSelectElement>("job-title-select");
+  select.replaceChildren();
+  const custom = document.createElement("option");
+  custom.value = "";
+  custom.textContent = "手工输入";
+  select.append(custom);
+  for (const title of BUILT_IN_JOB_TITLES) {
+    const option = document.createElement("option");
+    option.value = title;
+    option.textContent = title;
+    select.append(option);
+  }
+}
+function syncJobTitleControls(title = "") {
+  const keyword = title.trim();
+  $<HTMLInputElement>("job-title").value = keyword;
+  $<HTMLSelectElement>("job-title-select").value =
+    BUILT_IN_JOB_TITLES.includes(keyword) ? keyword : "";
+}
+function applyJobTitle(title: string) {
+  const keyword = title.trim();
+  if (!keyword) return;
+  const next = searchSettingsWithTitle(keyword, {
+    bossUrl: $<HTMLInputElement>("boss-search-url").value || searchSettings.bossUrl,
+    liepinUrl: $<HTMLInputElement>("liepin-search-url").value || searchSettings.liepinUrl,
+  });
+  $<HTMLInputElement>("boss-search-url").value = next.bossUrl;
+  $<HTMLInputElement>("liepin-search-url").value = next.liepinUrl;
+}
+$("job-title-select").onchange = () => {
+  const selected = $<HTMLSelectElement>("job-title-select").value;
+  if (!selected) {
+    $<HTMLInputElement>("job-title").focus();
+    render();
+    return;
+  }
+  $<HTMLInputElement>("job-title").value = selected;
+  applyJobTitle(selected);
+  render();
+};
+$("job-title").addEventListener("change", () => {
+  const title = $<HTMLInputElement>("job-title").value;
+  applyJobTitle(title);
+  syncJobTitleControls(title.trim());
+  render();
+});
+$("job-title").addEventListener("input", () => {
+  const title = $<HTMLInputElement>("job-title").value;
+  applyJobTitle(title);
+  const select = $<HTMLSelectElement>("job-title-select");
+  select.value = BUILT_IN_JOB_TITLES.includes(title.trim()) ? title.trim() : "";
+  render();
+});
+for (const id of ["boss-search-url", "liepin-search-url"])
+  $(id).addEventListener("change", () => {
+    try {
+      syncJobTitleControls(titleFromSearchSettings(parseSearchSettings({
+        bossUrl: $<HTMLInputElement>("boss-search-url").value,
+        liepinUrl: $<HTMLInputElement>("liepin-search-url").value,
+      })));
+    } catch {
+      syncJobTitleControls("");
+    }
+    render();
+  });
 $("save-search-settings").onclick = () => void act(async () => {
   if (settingsChangeBlocked())
     throw new Error("请先暂停或停止执行中的批次，等待已领取动作结束，再修改搜索入口");
+  applyJobTitle($<HTMLInputElement>("job-title").value);
   const next = parseSearchSettings({
     bossUrl: $<HTMLInputElement>("boss-search-url").value,
     liepinUrl: $<HTMLInputElement>("liepin-search-url").value,
@@ -483,6 +633,7 @@ $("save-search-settings").onclick = () => void act(async () => {
   searchSettings = next;
   $<HTMLInputElement>("boss-search-url").value = next.bossUrl;
   $<HTMLInputElement>("liepin-search-url").value = next.liepinUrl;
+  syncJobTitleControls(titleFromSearchSettings(next));
   await persistOptions();
   $("settings-status").textContent = `已保存；点击间隔 ${interval} 秒。招聘页将重新校准。`;
 });
@@ -571,6 +722,8 @@ async function init() {
   searchSettings = parseSearchSettings(stored.searchSettings);
   $<HTMLInputElement>("boss-search-url").value = searchSettings.bossUrl;
   $<HTMLInputElement>("liepin-search-url").value = searchSettings.liepinUrl;
+  fillJobTitleSelect();
+  syncJobTitleControls(titleFromSearchSettings(searchSettings));
   if (stored.taskOptions) {
     const options = stored.taskOptions;
     $<HTMLInputElement>("limit").value = String(options.limit ?? 20);
