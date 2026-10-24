@@ -2,6 +2,22 @@
 
 [中文](README.md) · [Extension guide](docs/EXTENSION_USAGE.en.md) · [扩展使用说明](docs/EXTENSION_USAGE.md)
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Stars](https://img.shields.io/github/stars/holyxing/auto-jb?style=flat)](https://github.com/holyxing/auto-jb/stargazers)
+
+**Applying at scale isn't hard. Remembering who you already applied to is.**
+
+Auto JB is a local-only job-hunting workbench for BOSS Zhipin and Liepin (China's two major job platforms): one Chrome extension screens jobs one by one, starts conversations, and writes every action into a local ledger — deduplicated by job ID, fully traceable. **Résumés are always sent by you, personally.** The tool clicks and records; it never pretends a message was delivered.
+
+What it fixes:
+
+- **Duplicate outreach** — the same job resurfaces days later; did you already click? → a per-job ledger means clicked jobs are never clicked twice, and uncertain results are never auto-retried;
+- **Manual screening fatigue** — judging hundreds of jobs for relevance one by one → the extension reads each job's title and responsibilities and pre-judges relevance (never filtering by salary, seniority, or experience), you just review;
+- **No audit trail** — applications scattered across two apps → every decision and click receipt is stored in a local PostgreSQL, reviewable in a read-only workbench.
+
+It runs entirely on your machine. On real sites, a click sends the platform's default greeting — validate the whole flow first on the built-in local fixture with fictional jobs.
+
+---
+
 Auto JB uses one Chrome extension for BOSS Zhipin and Liepin. A local FastAPI/PostgreSQL service stores run state, job decisions, click receipts, and deduplication history. The React workbench is a **read-only, platform-filtered history viewer** and a pairing entry point; starts, pauses, resumes, stops, and manual reconciliation happen in the extension.
 
 The extension considers jobs in Beijing whose title and responsibilities relate to both AI and product work. Search keywords can change, but a search URL is only the source of candidates: it does not replace the per-job scope check. Salary, seniority, and experience are not exclusion criteria. A run processes the results it can reach on the opened search page; it does not claim to cover every job on a platform.

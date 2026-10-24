@@ -2,6 +2,26 @@
 
 [English](README.en.md) · [中文扩展使用说明](docs/EXTENSION_USAGE.md) · [English extension guide](docs/EXTENSION_USAGE.en.md)
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Stars](https://img.shields.io/github/stars/holyxing/auto-jb?style=flat)](https://github.com/holyxing/auto-jb/stargazers)
+
+**海投不难，难的是投完还记得投过谁。**
+
+Auto JB 把 BOSS 直聘和猎聘的**岗位筛选、发起沟通、投递记录**收进一个只在本机运行的工作台：扩展逐岗判断相关性、按岗位 ID 自动去重、每一步动作都记进本地账本；**简历发送永远由你本人确认**——它只负责点击并记录，不冒充送达。
+
+它解决的是海投的三个真实麻烦：
+
+- **重复投递**：同一个岗位隔几天又刷到，点没点过全靠记忆 → 按岗位 ID 建账本，点过的永不重复点，结果不确定的永不自动重试；
+- **逐岗判断耗人**：几百个岗位逐个看"跟 AI 和产品相不相关" → 扩展逐岗读取标题与职责做初判（只看相关性，不按薪资、职级、经验误杀），你只做复核；
+- **复盘无据**：投递散落在两个 App 里，投了什么、为什么投全无记录 → 每一次判断依据与动作都存进本机 PostgreSQL，工作台按平台只读回看。
+
+核心能力：双平台共用一个 Chrome 扩展 · 逐岗相关性判断 · 点击间隔 5–120 秒可控 · 任务可暂停/恢复/续接 · 提供本地样本页，先在虚构岗位上验证全流程再上真实站点 · 数据不出本机。
+
+> ⚠️ 真实站点上的点击会发出平台的默认招呼语，请先用本地样本页跑通流程；是否使用、如何使用由你自行把握平台规则与账号风险。
+
+三分钟跑起来 → 见下方「启动」；扩展的安装与按钮说明见 [扩展使用说明](docs/EXTENSION_USAGE.md)。
+
+---
+
 以同一个 Chrome 扩展适配 BOSS 与猎聘职位页，FastAPI + PostgreSQL 保存任务、判断依据与动作账本，React 工作台按招聘平台只读展示历史结果。默认入口分别为 [BOSS 北京搜索页](https://www.zhipin.com/web/geek/jobs?query=AI%E4%BA%A7%E5%93%81%E7%BB%8F%E7%90%86&city=101010100&industry=&position=) 和 [猎聘北京搜索页](https://www.liepin.com/zhaopin/?city=010&dq=010&key=ai%E4%BA%A7%E5%93%81%E7%BB%8F%E7%90%86&workYearCode=0&currentPage=0&pageSize=40)；对岗位逐项判断是否同时与 AI 和产品相关，不按精确职位名称、职级、薪资或个人匹配分筛掉岗位。搜索页之外的相关岗位不在本轮发现范围内。
 
 **BOSS 以点击“立即沟通”、猎聘以打开职位明细后真实点击右上角“聊一聊”并观察页面响应为任务完成点，后续会话与简历由人工确认。** 扩展记录“已点击·待人工确认”，不宣称站内消息送达或简历已发送。只读扫描仍可单独使用；历史结果未知的岗位不会自动重试。旧版猎聘 DOM 点击记录未核实实际沟通，保留去重并人工核对。安装和灰色按钮说明见 [扩展使用说明](docs/EXTENSION_USAGE.md)，猎聘当前验收边界见 [猎聘接入与验收状态](docs/LIEPIN_INTEGRATION_PLAN.md)。
