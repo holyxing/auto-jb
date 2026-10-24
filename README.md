@@ -1,3 +1,5 @@
+![Auto JB](./cover.png)
+
 # Auto JB · 本机求职工作台
 
 [English](README.en.md) · [中文扩展使用说明](docs/EXTENSION_USAGE.md) · [English extension guide](docs/EXTENSION_USAGE.en.md)

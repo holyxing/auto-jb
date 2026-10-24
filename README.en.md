@@ -1,3 +1,5 @@
+![Auto JB](./cover.png)
+
 # Auto JB · Local job search workbench
 
 [中文](README.md) · [Extension guide](docs/EXTENSION_USAGE.en.md) · [扩展使用说明](docs/EXTENSION_USAGE.md)
